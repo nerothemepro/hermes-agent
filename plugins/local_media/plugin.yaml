@@ -1,0 +1,10 @@
+name: local_media
+version: 0.1.0
+description: "Local media generation tools for Hermes: ComfyUI keyframe + Wan2.1 video pipeline."
+author: local
+kind: standalone
+provides_tools:
+  - generate_video
+  - generate_video_sequence
+  - generate_ltx_video
+  - generate_ltx_video_sequence
