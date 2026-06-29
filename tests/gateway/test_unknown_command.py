@@ -147,6 +147,53 @@ async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_social_shortcut_rewrites_into_background_prompt(monkeypatch):
+    runner = _make_runner()
+    event = _make_event(
+        "/social-video-preview topic: Camping weekend memory summary: Create a short Facebook post from a bounded research bundle. media_path: /opt/data/hermes/generated-videos/demo.mp4"
+    )
+
+    seen = {}
+
+    async def _capture_background_command(captured_event):
+        seen["text"] = captured_event.text
+        return "bg started"
+
+    runner._handle_background_command = _capture_background_command
+
+    original_text = event.text
+    result = await runner._handle_social_shortcut_command(event)
+
+    assert result == "bg started"
+    assert event.text == original_text
+    assert seen["text"].startswith("/background /social-video-preview ")
+    assert "topic: Camping weekend memory" in seen["text"]
+    assert "summary: Create a short Facebook post" in seen["text"]
+
+
+
+@pytest.mark.asyncio
+async def test_herorches_shortcut_rewrites_into_background_prompt_without_args(monkeypatch):
+    runner = _make_runner()
+    event = _make_event("/health-all")
+
+    seen = {}
+
+    async def _capture_background_command(captured_event):
+        seen["text"] = captured_event.text
+        return "bg started"
+
+    runner._handle_background_command = _capture_background_command
+
+    original_text = event.text
+    result = await runner._handle_herorches_shortcut_command(event)
+
+    assert result == "bg started"
+    assert event.text == original_text
+    assert seen["text"] == "/background /health-all"
+
+
+@pytest.mark.asyncio
 async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch):
     """Telegram autocomplete sends /reload_mcp for the /reload-mcp built-in.
     That must NOT be flagged as unknown."""

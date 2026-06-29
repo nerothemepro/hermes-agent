@@ -252,6 +252,95 @@ class TestTelegramBotCommands:
         assert "queue" in names
         assert "steer" in names
 
+    def test_social_shortcuts_appear_when_quick_commands_are_configured(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            """quick_commands:
+  social-auto-post:
+    type: alias
+    target: /background /social-auto-post
+  social-auto-dry-run:
+    type: alias
+    target: /background /social-auto-dry-run
+  social-trend-preview:
+    type: alias
+    target: /background /social-trend-preview
+  social-image-preview:
+    type: alias
+    target: /background /social-image-preview
+  social-video-preview:
+    type: alias
+    target: /background /social-video-preview
+  social-image-post:
+    type: alias
+    target: /background /social-image-post
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        names = {name for name, _ in telegram_bot_commands()}
+        assert {
+            "social_auto_post",
+            "social_auto_dry_run",
+            "social_trend_preview",
+            "social_image_preview",
+            "social_video_preview",
+            "social_image_post",
+        }.issubset(names)
+
+
+    def test_herorches_shortcuts_appear_when_quick_commands_are_configured(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            """quick_commands:
+  health-all:
+    type: alias
+    target: /background /health-all
+  health:
+    type: alias
+    target: /background /health
+  diag:
+    type: alias
+    target: /background /diag
+  tail:
+    type: alias
+    target: /background /tail
+  recover-all:
+    type: alias
+    target: /background /recover-all
+  recover:
+    type: alias
+    target: /background /recover
+  models:
+    type: alias
+    target: /background /models
+  deps:
+    type: alias
+    target: /background /deps
+  incidents:
+    type: alias
+    target: /background /incidents
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        names = {name for name, _ in telegram_bot_commands()}
+        assert {
+            "health_all",
+            "health",
+            "diag",
+            "tail",
+            "recover_all",
+            "recover",
+            "models",
+            "deps",
+            "incidents",
+        }.issubset(names)
+
     def test_hyphenated_codex_runtime_is_exposed_as_underscore_command(self):
         """Telegram autocomplete exposes /codex-runtime as /codex_runtime."""
         names = {name for name, _ in telegram_bot_commands()}

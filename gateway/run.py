@@ -7924,6 +7924,27 @@ class GatewayRunner:
             # Gateway-handled info/control commands with dedicated
             # running-agent handlers.
             if _cmd_def_inner and _cmd_def_inner.name in _DEDICATED_HANDLERS:
+                if _cmd_def_inner.name in {
+                    "social-auto-post",
+                    "social-auto-dry-run",
+                    "social-trend-preview",
+                    "social-image-preview",
+                    "social-image-post",
+                    "social-video-preview",
+                }:
+                    return await self._handle_social_shortcut_command(event)
+                if _cmd_def_inner.name in {
+                    "health-all",
+                    "health",
+                    "diag",
+                    "tail",
+                    "recover-all",
+                    "recover",
+                    "models",
+                    "deps",
+                    "incidents",
+                }:
+                    return await self._handle_herorches_shortcut_command(event)
                 if _cmd_def_inner.name == "help":
                     return await self._handle_help_command(event)
                 if _cmd_def_inner.name == "commands":
@@ -8305,6 +8326,29 @@ class GatewayRunner:
 
         if canonical == "background":
             return await self._handle_background_command(event)
+
+        if canonical in {
+            "social-auto-post",
+            "social-auto-dry-run",
+            "social-trend-preview",
+            "social-image-preview",
+            "social-image-post",
+            "social-video-preview",
+        }:
+            return await self._handle_social_shortcut_command(event)
+
+        if canonical in {
+            "health-all",
+            "health",
+            "diag",
+            "tail",
+            "recover-all",
+            "recover",
+            "models",
+            "deps",
+            "incidents",
+        }:
+            return await self._handle_herorches_shortcut_command(event)
 
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.
@@ -12579,6 +12623,67 @@ class GatewayRunner:
 
         preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
         return t("gateway.background.started", preview=preview, task_id=task_id)
+
+    def _social_shortcut_usage(self, command: str) -> str:
+        usages = {
+            "social-auto-post": "Usage: /social-auto-post caption: <text>",
+            "social-auto-dry-run": "Usage: /social-auto-dry-run caption: <text>",
+            "social-trend-preview": "Usage: /social-trend-preview topic: <topic> summary: <summary>",
+            "social-image-preview": "Usage: /social-image-preview topic: <topic> summary: <summary> media_path: <path>",
+            "social-video-preview": "Usage: /social-video-preview topic: <topic> summary: <summary> media_path: <path>",
+            "social-image-post": "Usage: /social-image-post topic: <topic> summary: <summary> media_path: <path>",
+        }
+        return usages.get(command, f"Usage: /{command} <args>")
+
+    def _herorches_shortcut_usage(self, command: str) -> str:
+        usages = {
+            "health-all": "Usage: /health-all",
+            "health": "Usage: /health [profile]",
+            "diag": "Usage: /diag [profile|all]",
+            "tail": "Usage: /tail <profile> [lines]",
+            "recover-all": "Usage: /recover-all",
+            "recover": "Usage: /recover <profile>",
+            "models": "Usage: /models",
+            "deps": "Usage: /deps",
+            "incidents": "Usage: /incidents",
+        }
+        return usages.get(command, f"Usage: /{command}")
+
+    async def _handle_background_shortcut_command(self, event: MessageEvent, *, require_args: bool, usage: str) -> str:
+        command = event.get_command() or ""
+        raw_args = event.get_command_args().strip()
+        if require_args and not raw_args:
+            return usage
+
+        original_text = event.text
+        rewritten = f"/background /{command} {raw_args}".strip() if raw_args else f"/background /{command}"
+        try:
+            event.text = rewritten
+            return await self._handle_background_command(event)
+        finally:
+            event.text = original_text
+
+    async def _handle_social_shortcut_command(self, event: MessageEvent) -> str:
+        """Handle HerSocial shortcut commands by routing them through /background.
+
+        The background prompt preserves the original shortcut text so the
+        HerSocial profile can apply its own workflow rules.
+        """
+        command = event.get_command() or ""
+        return await self._handle_background_shortcut_command(
+            event,
+            require_args=True,
+            usage=self._social_shortcut_usage(command),
+        )
+
+    async def _handle_herorches_shortcut_command(self, event: MessageEvent) -> str:
+        """Handle HerOrches shortcut commands by routing them through /background."""
+        command = event.get_command() or ""
+        return await self._handle_background_shortcut_command(
+            event,
+            require_args=False,
+            usage=self._herorches_shortcut_usage(command),
+        )
 
     async def _run_background_task(
         self,
