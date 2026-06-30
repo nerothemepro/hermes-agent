@@ -58,10 +58,10 @@ GENERATE_HERVID_PREVIEW_SCHEMA: dict[str, Any] = {
             },
             "timeout_seconds": {
                 "type": "integer",
-                "default": 300,
-                "minimum": 60,
-                "maximum": 600,
-                "description": "Max wait time for keyframe generation.",
+                "default": 900,
+                "minimum": 120,
+                "maximum": 1800,
+                "description": "Max wait time for keyframe generation. Use a higher value when ComfyUI is under load.",
             },
         },
         "required": ["brief"],
@@ -73,12 +73,13 @@ GENERATE_HERVID_PREVIEW_SCHEMA: dict[str, Any] = {
 GENERATE_HERVID_VIDEO_SCHEMA: dict[str, Any] = {
     "name": "generate_hervid_video",
     "description": (
-        "Render a full multi-shot HerVid video (8-60 min on RTX 3090). "
+        "PRIMARY Telegram-safe HerVid workflow. Render a full multi-shot HerVid video (8-60 min on RTX 3090). "
         "MANDATORY workflow: you MUST call generate_hervid_preview first, show the keyframe image to "
         "the user, wait for their approval, THEN call this tool with preview_id. "
         "DO NOT call this tool with only a brief and no preview_id — skipping the preview wastes a "
         "full render if composition is wrong (missing legs, wrong framing, wrong character). "
-        "Exception: user explicitly says 'skip preview' or 'generate directly'."
+        "Exception: user explicitly says 'skip preview' or 'generate directly'. "
+        "For ordinary HerVid Telegram requests, prefer this tool over generate_ltx_video."
     ),
     "parameters": {
         "type": "object",
@@ -103,7 +104,7 @@ GENERATE_HERVID_VIDEO_SCHEMA: dict[str, Any] = {
                 "description": (
                     "Render quality: test=fast (2s/shot, ~8 min); "
                     "standard=balanced; quality=best (recommended). "
-                    "Ignored when preview_id is provided (mode comes from the preview)."
+                    "Always respected — even when preview_id is provided, this mode overrides the preview's stored mode."
                 ),
             },
             "timeout_seconds": {
@@ -123,7 +124,9 @@ GENERATE_HERVID_VIDEO_SCHEMA: dict[str, Any] = {
 GENERATE_LTX_VIDEO_SCHEMA: dict[str, Any] = {
     "name": "generate_ltx_video",
     "description": (
-        "Generate a short realistic/cinematic/product/travel/social video through local ComfyUI LTX-2.3 I2V. "
+        "DIRECT operator path for a short realistic/cinematic/product/travel/social video through local ComfyUI LTX-2.3 I2V. "
+        "This is NOT the normal HerVid Telegram workflow. For ordinary user-facing HerVid requests, prefer "
+        "generate_hervid_video so the preview/approval flow runs first. "
         "Use this when HerVid needs LTX-2.3 instead of Wan2.1, especially for realistic marketing, product, "
         "travel, lifestyle, and social clips. Prefer mode=test for smoke checks; standard is the safe default "
         "for real use on RTX 3090. The tool saves the final mp4 under /opt/data/hermes/generated-videos and "
@@ -545,7 +548,7 @@ def handle_generate_hervid_preview(args: dict[str, Any], **kw) -> str:
     mode = str(args.get("mode") or "quality").strip().lower()
     if mode not in {"test", "standard", "quality"}:
         mode = "quality"
-    timeout = int(args.get("timeout_seconds") or 300)
+    timeout = int(args.get("timeout_seconds") or 900)
 
     body = json.dumps({"brief": brief, "mode": mode}).encode()
     req = urllib.request.Request(
@@ -595,8 +598,9 @@ def handle_generate_hervid_video(args: dict[str, Any], **kw) -> str:
     # This ensures the keyframe is always shown to the user before the full render,
     # even when the model skips the explicit generate_hervid_preview call.
     if not preview_id:
+        preview_timeout = int(args.get("preview_timeout_seconds") or args.get("timeout_seconds") or 900)
         preview_result_str = handle_generate_hervid_preview(
-            {"brief": brief, "mode": args.get("mode") or "quality", "timeout_seconds": 300},
+            {"brief": brief, "mode": args.get("mode") or "quality", "timeout_seconds": preview_timeout},
             **kw,
         )
         try:

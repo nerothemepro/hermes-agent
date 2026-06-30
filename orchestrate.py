@@ -41,14 +41,21 @@ from pydantic import BaseModel
 # --------------------------------------------------------------------------- #
 # Config                                                                       #
 # --------------------------------------------------------------------------- #
-LM_URL = os.environ.get("LM_STUDIO_BASE_URL", "http://host.docker.internal:1234/v1")
+_LM_BASE = os.environ.get("LM_STUDIO_BASE_URL", "http://host.docker.internal:1234/v1")
+# Normalize: env var may be set with or without /v1 suffix
+LM_URL = _LM_BASE.rstrip("/")
+if not LM_URL.endswith("/v1"):
+    LM_URL = LM_URL + "/v1"
 LM_MODEL = os.environ.get("LM_MODEL", "google/gemma-4-12b-qat")
 # LM Studio management API (not /v1 — separate port/path)
-LM_MGMT = LM_URL.replace("/v1", "")  # http://host.docker.internal:1234
+LM_MGMT = LM_URL[: LM_URL.rfind("/v1")]  # http://host.docker.internal:1234
 HVP_URL = os.environ.get("HVP_API_URL", "http://localhost:8500")
 TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 POLL_INTERVAL = int(os.environ.get("HVP_POLL_INTERVAL", "30"))
 MAX_WAIT = int(os.environ.get("HVP_MAX_WAIT", "7200"))
+PREVIEW_POLL_INTERVAL = int(os.environ.get("HVO_PREVIEW_POLL_INTERVAL", "10"))
+PREVIEW_POLL_TIMEOUT = int(os.environ.get("HVO_PREVIEW_POLL_TIMEOUT", "30"))
+PREVIEW_MAX_WAIT = int(os.environ.get("HVO_PREVIEW_MAX_WAIT", "900"))
 HOST = os.environ.get("HVO_HOST", "0.0.0.0")
 PORT = int(os.environ.get("HVO_PORT", "8501"))
 
@@ -204,9 +211,23 @@ def step2_submit_job(creative: dict[str, Any], mode: str = "quality") -> str:
 def step3_poll(job_id: str, on_status: Callable[[str], None] | None = None) -> dict[str, Any]:
     deadline = time.time() + MAX_WAIT
     last = None
+    _consecutive_errors = 0
     while time.time() < deadline:
-        resp = requests.get(f"{HVP_URL}/job/{job_id}", timeout=15)
-        resp.raise_for_status()
+        try:
+            # 60s timeout: GPU under heavy load can delay uvicorn responses >15s
+            resp = requests.get(f"{HVP_URL}/job/{job_id}", timeout=60)
+            resp.raise_for_status()
+            _consecutive_errors = 0
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            _consecutive_errors += 1
+            print(f"[orchestrate] step3_poll transient error #{_consecutive_errors}: {e} — retrying",
+                  file=sys.stderr, flush=True)
+            if _consecutive_errors >= 5:
+                raise RuntimeError(
+                    f"pipeline_api unreachable after 5 consecutive poll failures: {e}"
+                ) from e
+            time.sleep(POLL_INTERVAL)
+            continue
         job = resp.json()
         status = job["status"]
         if status != last:
@@ -364,7 +385,9 @@ def _run_pipeline(pj_id: str, brief: str, chat_id: str | None, mode: str = "qual
             if not stored:
                 raise RuntimeError(f"preview_id '{preview_id}' not found or expired")
             creative = stored["creative"]
-            mode = stored.get("mode", mode)
+            # Request mode wins; fall back to stored preview mode only if mode is empty
+            if not mode:
+                mode = stored.get("mode", "quality")
             result = run_from_creative(creative, chat_id=chat_id, on_progress=_log, mode=mode)
         else:
             result = run(brief, chat_id=chat_id, on_progress=_log, mode=mode)
@@ -499,12 +522,27 @@ def generate_preview(req: PreviewRequest) -> dict[str, Any]:
     kf_job_id = resp.json()["id"]
     log(f"keyframe job: {kf_job_id}")
 
-    # Poll until done (keyframe is fast: ~30-90s)
-    deadline = time.time() + 300
+    # Poll until done. The old 300s ceiling was too tight on this RTX 3090
+    # stack when ComfyUI was busy; logs showed preview jobs completing shortly
+    # after the orchestrator had already raised a timeout.
+    deadline = time.time() + PREVIEW_MAX_WAIT
+    last_status = None
+    consecutive_poll_errors = 0
     while time.time() < deadline:
-        r = requests.get(f"{HVP_URL}/job/{kf_job_id}", timeout=15)
-        r.raise_for_status()
-        job = r.json()
+        try:
+            r = requests.get(f"{HVP_URL}/job/{kf_job_id}", timeout=PREVIEW_POLL_TIMEOUT)
+            r.raise_for_status()
+            job = r.json()
+            consecutive_poll_errors = 0
+        except requests.RequestException as exc:
+            consecutive_poll_errors += 1
+            log(
+                "preview poll transient error "
+                f"#{consecutive_poll_errors}: {type(exc).__name__}: {exc}"
+            )
+            time.sleep(min(PREVIEW_POLL_INTERVAL, 15))
+            continue
+        last_status = job.get("status")
         if job["status"] == "completed":
             image_path = job.get("image_path")
             if not image_path:
@@ -524,9 +562,12 @@ def generate_preview(req: PreviewRequest) -> dict[str, Any]:
         if job["status"] == "failed":
             errs = job.get("errors") or job.get("stderr_tail", [])[-3:]
             raise RuntimeError(f"keyframe render failed: {errs}")
-        time.sleep(10)
+        time.sleep(PREVIEW_POLL_INTERVAL)
 
-    raise TimeoutError(f"keyframe job {kf_job_id} did not complete within 300s")
+    raise TimeoutError(
+        f"keyframe job {kf_job_id} did not complete within {PREVIEW_MAX_WAIT}s "
+        f"(last_status={last_status!r}, consecutive_poll_errors={consecutive_poll_errors})"
+    )
 
 
 @app.get("/pipeline-job/{pj_id}")
