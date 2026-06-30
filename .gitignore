@@ -2,6 +2,7 @@
 /venv/
 /venv.old/
 /_pycache/
+.playwright-mcp/
 *.pyc*
 __pycache__/
 .venv/

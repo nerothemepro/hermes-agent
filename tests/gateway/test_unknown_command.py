@@ -194,6 +194,27 @@ async def test_herorches_shortcut_rewrites_into_background_prompt_without_args(m
 
 
 @pytest.mark.asyncio
+async def test_herresearch_shortcut_rewrites_into_background_prompt_without_args(monkeypatch):
+    runner = _make_runner()
+    event = _make_event("/github-discovery")
+
+    seen = {}
+
+    async def _capture_background_command(captured_event):
+        seen["text"] = captured_event.text
+        return "bg started"
+
+    runner._handle_background_command = _capture_background_command
+
+    original_text = event.text
+    result = await runner._handle_herresearch_shortcut_command(event)
+
+    assert result == "bg started"
+    assert event.text == original_text
+    assert seen["text"] == "/background /github-discovery"
+
+
+@pytest.mark.asyncio
 async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch):
     """Telegram autocomplete sends /reload_mcp for the /reload-mcp built-in.
     That must NOT be flagged as unknown."""

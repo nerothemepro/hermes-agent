@@ -291,6 +291,23 @@ class TestTelegramBotCommands:
         }.issubset(names)
 
 
+    def test_herresearch_shortcut_appears_when_quick_commands_are_configured(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            """quick_commands:
+  github-discovery:
+    type: alias
+    target: /background /github-discovery
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        names = {name for name, _ in telegram_bot_commands()}
+        assert "github_discovery" in names
+
+
     def test_herorches_shortcuts_appear_when_quick_commands_are_configured(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

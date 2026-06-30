@@ -117,6 +117,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("social-image-post", "HerSocial image post live-publish shortcut", "Tools & Skills",
                gateway_only=True, gateway_config_gate="quick_commands.social-image-post",
                args_hint="topic: <topic> summary: <summary> media_path: <path>"),
+    CommandDef("github-discovery", "HerResearch GitHub discovery report shortcut", "Tools & Skills",
+               gateway_only=True, gateway_config_gate="quick_commands.github-discovery"),
     CommandDef("health-all", "HerOrches full fleet health shortcut", "Tools & Skills",
                gateway_only=True, gateway_config_gate="quick_commands.health-all"),
     CommandDef("health", "HerOrches per-profile health shortcut", "Tools & Skills",

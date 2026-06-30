@@ -7934,6 +7934,10 @@ class GatewayRunner:
                 }:
                     return await self._handle_social_shortcut_command(event)
                 if _cmd_def_inner.name in {
+                    "github-discovery",
+                }:
+                    return await self._handle_herresearch_shortcut_command(event)
+                if _cmd_def_inner.name in {
                     "health-all",
                     "health",
                     "diag",
@@ -8336,6 +8340,11 @@ class GatewayRunner:
             "social-video-preview",
         }:
             return await self._handle_social_shortcut_command(event)
+
+        if canonical in {
+            "github-discovery",
+        }:
+            return await self._handle_herresearch_shortcut_command(event)
 
         if canonical in {
             "health-all",
@@ -12649,6 +12658,12 @@ class GatewayRunner:
         }
         return usages.get(command, f"Usage: /{command}")
 
+    def _herresearch_shortcut_usage(self, command: str) -> str:
+        usages = {
+            "github-discovery": "Usage: /github-discovery",
+        }
+        return usages.get(command, f"Usage: /{command}")
+
     async def _handle_background_shortcut_command(self, event: MessageEvent, *, require_args: bool, usage: str) -> str:
         command = event.get_command() or ""
         raw_args = event.get_command_args().strip()
@@ -12683,6 +12698,15 @@ class GatewayRunner:
             event,
             require_args=False,
             usage=self._herorches_shortcut_usage(command),
+        )
+
+    async def _handle_herresearch_shortcut_command(self, event: MessageEvent) -> str:
+        """Handle HerResearch shortcut commands by routing them through /background."""
+        command = event.get_command() or ""
+        return await self._handle_background_shortcut_command(
+            event,
+            require_args=False,
+            usage=self._herresearch_shortcut_usage(command),
         )
 
     async def _run_background_task(
