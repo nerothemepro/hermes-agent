@@ -5,6 +5,7 @@ text, which often leads to silent failure (e.g. the model inventing a bogus
 delegate_task call instead of telling the user the command doesn't exist).
 """
 
+import json
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -267,6 +268,68 @@ async def test_herwiki_search_shortcut_requires_and_forwards_query(monkeypatch):
 
     usage_result = await runner._handle_herwiki_shortcut_command(_make_event("/wiki-search"))
     assert usage_result == "Usage: /wiki-search <query>"
+
+
+@pytest.mark.asyncio
+async def test_herwiki_lint_shortcut_formats_json_summary(monkeypatch):
+    runner = _make_runner()
+    runner.config.quick_commands = {"wiki-lint": {"enabled": True}}
+    event = _make_event("/wiki-lint")
+
+    async def _capture(argv, *, timeout):
+        return json.dumps({
+            "status": "completed",
+            "action": "lint",
+            "report_paths": ["/tmp/wiki/.sdtk/wiki/reports/lint-report.md"],
+            "warnings": [],
+            "errors": [],
+            "stdout": "[wiki] Lint report: /tmp/wiki/.sdtk/wiki/reports/lint-report.md\n[wiki] Findings: 7",
+        })
+
+    runner._run_deterministic_shortcut_command = _capture
+
+    result = await runner._handle_herwiki_shortcut_command(event)
+
+    assert '"status"' not in result
+    assert "Status: completed" in result
+    assert "Action: lint" in result
+    assert "- Findings: 7" in result
+    assert "Reports:" in result
+    assert "/tmp/wiki/.sdtk/wiki/reports/lint-report.md" in result
+
+
+@pytest.mark.asyncio
+async def test_herwiki_search_shortcut_formats_compact_summary(monkeypatch):
+    runner = _make_runner()
+    runner.config.quick_commands = {"wiki-search": {"enabled": True}}
+    event = _make_event("/wiki-search graph runtime")
+
+    async def _capture(argv, *, timeout):
+        return json.dumps({
+            "status": "completed",
+            "action": "search",
+            "query": "graph runtime",
+            "result_count": 2,
+            "total_matches": 12,
+            "search_meta": {"scanned_files": 381},
+            "warnings": [],
+            "errors": [],
+            "search_results": [
+                {"title": "Runtime A", "path": "wiki/a.md", "score": 99},
+                {"title": "Runtime B", "path": "wiki/b.md", "score": 88},
+            ],
+        })
+
+    runner._run_deterministic_shortcut_command = _capture
+
+    result = await runner._handle_herwiki_shortcut_command(event)
+
+    assert '"search_results"' not in result
+    assert "Status: completed" in result
+    assert "Results: 2 shown / 12 total" in result
+    assert "Scanned files: 381" in result
+    assert "1. Runtime A (score 99)" in result
+    assert "   wiki/a.md" in result
 
 
 @pytest.mark.asyncio

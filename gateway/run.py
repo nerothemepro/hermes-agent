@@ -12801,7 +12801,98 @@ class GatewayRunner:
                 return usage
             argv.extend(["--query", raw_args])
 
-        return await self._run_deterministic_shortcut_command(argv, timeout=120)
+        output = await self._run_deterministic_shortcut_command(argv, timeout=120)
+        return self._format_herwiki_shortcut_output(action, output)
+
+    def _format_herwiki_shortcut_output(self, action: str, output: str) -> str:
+        """Format HerWiki helper JSON into a compact operator-facing reply."""
+        try:
+            payload = json.loads(output)
+        except Exception:
+            return output
+
+        if not isinstance(payload, dict):
+            return output
+
+        status = payload.get("status") or "unknown"
+        errors = payload.get("errors") or []
+        warnings = payload.get("warnings") or []
+        report_paths = [path for path in (payload.get("report_paths") or []) if path]
+
+        lines = [
+            f"Status: {status}",
+            f"Action: {payload.get('action') or action}",
+        ]
+
+        if action == "search":
+            query = payload.get("query") or ""
+            if query:
+                lines.append(f"Query: {query}")
+            result_count = payload.get("result_count")
+            total_matches = payload.get("total_matches")
+            if total_matches is not None:
+                lines.append(f"Results: {result_count} shown / {total_matches} total")
+            elif result_count is not None:
+                lines.append(f"Results: {result_count}")
+
+            search_meta = payload.get("search_meta") or {}
+            scanned_files = search_meta.get("scanned_files")
+            if scanned_files is not None:
+                lines.append(f"Scanned files: {scanned_files}")
+
+            matches = payload.get("search_results") or []
+            if matches:
+                lines.append("")
+                lines.append("Top matches:")
+                for index, item in enumerate(matches[:5], start=1):
+                    if not isinstance(item, dict):
+                        continue
+                    title = item.get("title") or item.get("path") or "(untitled)"
+                    item_path = item.get("path") or ""
+                    score = item.get("score")
+                    suffix = f" (score {score})" if score is not None else ""
+                    lines.append(f"{index}. {title}{suffix}")
+                    if item_path:
+                        lines.append(f"   {item_path}")
+            else:
+                lines.append("Top matches: none")
+        else:
+            source_root = payload.get("source_root")
+            if source_root:
+                lines.append(f"Source root: {source_root}")
+
+            stdout_lines = []
+            for line in (payload.get("stdout") or "").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("[wiki] "):
+                    line = line[len("[wiki] "):]
+                stdout_lines.append(line)
+
+            if stdout_lines:
+                lines.append("")
+                lines.append("Summary:")
+                lines.extend(f"- {line}" for line in stdout_lines[:8])
+
+            if report_paths:
+                lines.append("")
+                lines.append("Reports:")
+                lines.extend(f"- {path}" for path in report_paths[:5])
+                if len(report_paths) > 5:
+                    lines.append(f"- ... {len(report_paths) - 5} more")
+
+        if warnings:
+            lines.append("")
+            lines.append("Warnings:")
+            lines.extend(f"- {warning}" for warning in warnings[:5])
+
+        if errors:
+            lines.append("")
+            lines.append("Errors:")
+            lines.extend(f"- {error}" for error in errors[:5])
+
+        return "\n".join(lines).strip()
 
     async def _run_background_task(
         self,
