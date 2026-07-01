@@ -7938,6 +7938,15 @@ class GatewayRunner:
                 }:
                     return await self._handle_herresearch_shortcut_command(event)
                 if _cmd_def_inner.name in {
+                    "wiki-ingest",
+                    "wiki-compile",
+                    "wiki-lint",
+                    "wiki-maintain",
+                    "wiki-discover",
+                    "wiki-search",
+                }:
+                    return await self._handle_herwiki_shortcut_command(event)
+                if _cmd_def_inner.name in {
                     "health-all",
                     "health",
                     "diag",
@@ -8345,6 +8354,16 @@ class GatewayRunner:
             "github-discovery",
         }:
             return await self._handle_herresearch_shortcut_command(event)
+
+        if canonical in {
+            "wiki-ingest",
+            "wiki-compile",
+            "wiki-lint",
+            "wiki-maintain",
+            "wiki-discover",
+            "wiki-search",
+        }:
+            return await self._handle_herwiki_shortcut_command(event)
 
         if canonical in {
             "health-all",
@@ -12664,6 +12683,53 @@ class GatewayRunner:
         }
         return usages.get(command, f"Usage: /{command}")
 
+    def _herwiki_shortcut_usage(self, command: str) -> str:
+        usages = {
+            "wiki-ingest": "Usage: /wiki-ingest",
+            "wiki-compile": "Usage: /wiki-compile",
+            "wiki-lint": "Usage: /wiki-lint",
+            "wiki-maintain": "Usage: /wiki-maintain",
+            "wiki-discover": "Usage: /wiki-discover",
+            "wiki-search": "Usage: /wiki-search <query>",
+        }
+        return usages.get(command, f"Usage: /{command}")
+
+    def _shortcut_enabled(self, command: str) -> bool:
+        if isinstance(self.config, dict):
+            quick_commands = self.config.get("quick_commands", {}) or {}
+        else:
+            quick_commands = getattr(self.config, "quick_commands", {}) or {}
+        return isinstance(quick_commands, dict) and command in quick_commands
+
+    async def _run_deterministic_shortcut_command(self, argv: list[str], *, timeout: int = 120) -> str:
+        from tools.environments.local import _sanitize_subprocess_env
+        from agent.redact import redact_sensitive_text
+
+        sanitized_env = _sanitize_subprocess_env(os.environ.copy())
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=sanitized_env,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.communicate()
+            return f"Shortcut timed out ({timeout}s)."
+
+        output = ((stdout or b"") + (b"\n" if stdout and stderr else b"") + (stderr or b"")).decode().strip()
+        if output:
+            output = redact_sensitive_text(output)
+        if proc.returncode not in (0, None):
+            if output:
+                return output
+            return f"Shortcut failed with exit code {proc.returncode}."
+        return output if output else "Command returned no output."
+
     async def _handle_background_shortcut_command(self, event: MessageEvent, *, require_args: bool, usage: str) -> str:
         command = event.get_command() or ""
         raw_args = event.get_command_args().strip()
@@ -12708,6 +12774,34 @@ class GatewayRunner:
             require_args=False,
             usage=self._herresearch_shortcut_usage(command),
         )
+
+    async def _handle_herwiki_shortcut_command(self, event: MessageEvent) -> str:
+        """Handle HerWiki shortcut commands with deterministic helper execution."""
+        command = event.get_command() or ""
+        if not self._shortcut_enabled(command):
+            return f"/{command} is not enabled for this profile."
+
+        raw_args = event.get_command_args().strip()
+        usage = self._herwiki_shortcut_usage(command)
+        action_map = {
+            "wiki-ingest": "ingest",
+            "wiki-compile": "compile",
+            "wiki-lint": "lint",
+            "wiki-maintain": "maintain",
+            "wiki-discover": "discover",
+            "wiki-search": "search",
+        }
+        action = action_map.get(command)
+        if not action:
+            return usage
+
+        argv = ["node", "/workspace/hermes-agent-plugin/bin/herwiki-sdtk-wiki-tool", action]
+        if command == "wiki-search":
+            if not raw_args:
+                return usage
+            argv.extend(["--query", raw_args])
+
+        return await self._run_deterministic_shortcut_command(argv, timeout=120)
 
     async def _run_background_task(
         self,

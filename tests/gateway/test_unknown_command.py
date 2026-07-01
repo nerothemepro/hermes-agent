@@ -215,6 +215,61 @@ async def test_herresearch_shortcut_rewrites_into_background_prompt_without_args
 
 
 @pytest.mark.asyncio
+async def test_herwiki_shortcut_executes_deterministic_helper(monkeypatch):
+    runner = _make_runner()
+    runner.config.quick_commands = {"wiki-lint": {"enabled": True}}
+    event = _make_event("/wiki-lint")
+
+    seen = {}
+
+    async def _capture(argv, *, timeout):
+        seen["argv"] = argv
+        seen["timeout"] = timeout
+        return "lint ok"
+
+    runner._run_deterministic_shortcut_command = _capture
+
+    result = await runner._handle_herwiki_shortcut_command(event)
+
+    assert result == "lint ok"
+    assert seen["timeout"] == 120
+    assert seen["argv"] == [
+        "node",
+        "/workspace/hermes-agent-plugin/bin/herwiki-sdtk-wiki-tool",
+        "lint",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_herwiki_search_shortcut_requires_and_forwards_query(monkeypatch):
+    runner = _make_runner()
+    runner.config.quick_commands = {"wiki-search": {"enabled": True}}
+    event = _make_event("/wiki-search graph runtime")
+
+    seen = {}
+
+    async def _capture(argv, *, timeout):
+        seen["argv"] = argv
+        return "search ok"
+
+    runner._run_deterministic_shortcut_command = _capture
+
+    result = await runner._handle_herwiki_shortcut_command(event)
+
+    assert result == "search ok"
+    assert seen["argv"] == [
+        "node",
+        "/workspace/hermes-agent-plugin/bin/herwiki-sdtk-wiki-tool",
+        "search",
+        "--query",
+        "graph runtime",
+    ]
+
+    usage_result = await runner._handle_herwiki_shortcut_command(_make_event("/wiki-search"))
+    assert usage_result == "Usage: /wiki-search <query>"
+
+
+@pytest.mark.asyncio
 async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch):
     """Telegram autocomplete sends /reload_mcp for the /reload-mcp built-in.
     That must NOT be flagged as unknown."""

@@ -308,6 +308,39 @@ class TestTelegramBotCommands:
         assert "github_discovery" in names
 
 
+    def test_herwiki_shortcuts_appear_when_quick_commands_are_configured(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            """quick_commands:
+  wiki-ingest:
+    enabled: true
+  wiki-compile:
+    enabled: true
+  wiki-lint:
+    enabled: true
+  wiki-maintain:
+    enabled: true
+  wiki-discover:
+    enabled: true
+  wiki-search:
+    enabled: true
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        names = {name for name, _ in telegram_bot_commands()}
+        assert {
+            "wiki_ingest",
+            "wiki_compile",
+            "wiki_lint",
+            "wiki_maintain",
+            "wiki_discover",
+            "wiki_search",
+        }.issubset(names)
+
+
     def test_herorches_shortcuts_appear_when_quick_commands_are_configured(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
