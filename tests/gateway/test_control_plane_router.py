@@ -1,0 +1,128 @@
+"""Contract tests for the fail-closed Phase C Telegram control-plane router."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from gateway.config import Platform
+from gateway.control_plane_router import ControlPlaneRouter
+from gateway.platforms.base import MessageEvent
+from gateway.session import SessionSource
+
+
+OWNER_ID = "10001"
+
+
+def _event(text: str, user_id: str = OWNER_ID) -> MessageEvent:
+    return MessageEvent(
+        text=text,
+        message_id="phase-c-test",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id=user_id,
+            chat_id=user_id,
+            user_name="owner" if user_id == OWNER_ID else "other",
+            chat_type="dm",
+        ),
+    )
+
+
+def _router(*, enabled: bool = True, runner=None) -> ControlPlaneRouter:
+    return ControlPlaneRouter(
+        {
+            "enabled": enabled,
+            "owner_telegram_user_id": OWNER_ID,
+            "command_timeout_seconds": 7,
+        },
+        command_runner=runner,
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_owner_drops_before_any_parse_or_cli() -> None:
+    command_runner = AsyncMock()
+    decision = await _router(runner=command_runner).handle(_event("APPROVE DISPATCH run_bad_bad", "20002"))
+
+    assert decision.handled is True
+    assert decision.response is None
+    command_runner.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_disabled_flag_preserves_normal_gateway_passthrough() -> None:
+    command_runner = AsyncMock()
+    decision = await _router(enabled=False, runner=command_runner).handle(_event("/site-audit sdtk_public_web"))
+
+    assert decision.handled is False
+    assert decision.response is None
+    command_runner.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    [
+        "approve it",
+        "/site-audit",
+        "/site-audit docs extra",
+        "/site_audit sdtk_public_web",
+        "APPROVE DISPATCH run_not-a-run",
+    ],
+)
+async def test_owner_invalid_or_partial_grammar_is_refused_without_cli(text: str) -> None:
+    command_runner = AsyncMock()
+    decision = await _router(runner=command_runner).handle(_event(text))
+
+    assert decision.handled is True
+    assert "Exact syntax" in (decision.response or "")
+    command_runner.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unknown_gate_is_rejected_without_cli() -> None:
+    command_runner = AsyncMock()
+    decision = await _router(runner=command_runner).handle(_event("APPROVE GATE run_bad_bad wrong_gate"))
+
+    assert decision.handled is True
+    assert "Unknown run_id or gate_id" in (decision.response or "")
+    command_runner.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_normal_owner_message_passes_through_unchanged() -> None:
+    decision = await _router().handle(_event("Please summarize the current health status."))
+
+    assert decision.handled is False
+    assert decision.response is None
+
+
+@pytest.mark.asyncio
+async def test_site_audit_uses_bounded_prepare_command_and_returns_preview() -> None:
+    command_runner = AsyncMock(return_value=SimpleNamespace(
+        returncode=0,
+        stdout='{"status":"prepared_waiting_for_exact_dispatch_approval","run_id":"run_abc123_def456","preview":{"task_count":1,"gate_count":1,"profile":"herresearch","deadline_minutes":30,"cost_band":"low"}}',
+        stderr="",
+    ))
+
+    decision = await _router(runner=command_runner).handle(_event("/site-audit sdtk_public_web"))
+
+    assert decision.handled is True
+    assert "run_abc123_def456" in (decision.response or "")
+    assert "APPROVE DISPATCH run_abc123_def456" in (decision.response or "")
+    argv = command_runner.await_args.args[0]
+    assert argv[:3] == ["node", "/workspace/hermes-agent-plugin/bin/hermes-control-plane-prepare", "--template"]
+    assert "site_audit" in argv
+
+
+@pytest.mark.asyncio
+async def test_cli_timeout_returns_fail_closed_reply_without_retry() -> None:
+    async def _timeout(_argv, _timeout_seconds):
+        raise TimeoutError
+
+    decision = await _router(runner=_timeout).handle(_event("/site-audit sdtk_public_web"))
+
+    assert decision.handled is True
+    assert "temporarily unavailable" in (decision.response or "")
