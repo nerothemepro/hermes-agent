@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.control_plane_router import RouterDecision
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
 
@@ -177,3 +178,40 @@ async def test_internal_events_bypass_hook(monkeypatch):
     # Even though the hook would say skip, internal events bypass it.
     await runner._handle_message(event)
     assert called["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_control_plane_router_runs_before_pairing_for_silent_drop(monkeypatch):
+    """A handled router decision prevents pairing/auth and agent dispatch."""
+    _clear_auth_env(monkeypatch)
+    runner, adapter = _make_runner(Platform.TELEGRAM)
+    runner._scale_to_zero_note_real_inbound = lambda: None
+    router = SimpleNamespace(handle=AsyncMock(return_value=RouterDecision(True)))
+    runner._control_plane_router = router
+
+    result = await runner._handle_message(_make_event("APPROVE DISPATCH run_abc123_def456", Platform.TELEGRAM))
+
+    assert result is None
+    router.handle.assert_awaited_once()
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_control_plane_router_passthrough_keeps_normal_agent_path(monkeypatch):
+    """A disabled/non-control router decision preserves the existing LLM path."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "*")
+    runner, _adapter = _make_runner(Platform.TELEGRAM)
+    runner._scale_to_zero_note_real_inbound = lambda: None
+    runner._control_plane_router = SimpleNamespace(handle=AsyncMock(return_value=RouterDecision(False)))
+    seen = {}
+
+    async def _capture(event, source, _quick_key, _run_generation):
+        seen["text"] = event.text
+        return "ok"
+
+    runner._handle_message_with_agent = _capture  # noqa: SLF001
+    await runner._handle_message(_make_event("ordinary message", Platform.TELEGRAM))
+
+    assert seen["text"] == "ordinary message"

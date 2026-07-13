@@ -2556,6 +2556,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
         self.config = config or load_gateway_config()
+        # Phase C router config is snapshotted at gateway startup. Disabling
+        # control_plane_router.enabled and restarting rolls it back without a
+        # code change.
+        try:
+            from gateway.control_plane_router import ControlPlaneRouter
+            self._control_plane_router = ControlPlaneRouter.from_gateway_config(
+                _load_gateway_runtime_config()
+            )
+        except Exception:
+            logger.warning("Control-plane router configuration failed closed", exc_info=True)
+            self._control_plane_router = None
         # Mark the process as a profile multiplexer when configured. This flips
         # agent.secret_scope.get_secret() to fail-closed on any unscoped
         # credential read, so a missed migration crashes loudly instead of
@@ -7890,6 +7901,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # clock is what the idle predicate (gateway/scale_to_zero.is_idle) reads.
         if not is_internal:
             self._scale_to_zero_note_real_inbound()
+
+        # Router runs before pairing/auth and before the plugin/LLM pipeline.
+        # Non-owner control traffic therefore cannot leak run/task state.
+        if not is_internal:
+            router = getattr(self, "_control_plane_router", None)
+            if router is not None:
+                try:
+                    router_decision = await router.handle(event)
+                except Exception:
+                    # Do not reveal router state to an unknown sender if an
+                    # unexpected boundary failure occurs. Command-level errors
+                    # are handled inside the router and return owner-only text.
+                    logger.warning("Control-plane router failed closed", exc_info=True)
+                    return None
+                if router_decision.handled:
+                    return router_decision.response
 
         # Fire pre_gateway_dispatch plugin hook for user-originated messages.
         # Plugins receive the MessageEvent and may return a dict influencing flow:
