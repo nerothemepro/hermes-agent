@@ -252,7 +252,25 @@ def _get_profiles_root() -> Path:
     ``~/.hermes``, profiles live under ``HERMES_HOME/profiles/`` so
     they persist on the mounted volume.
     """
-    return _get_default_hermes_home() / "profiles"
+    base = _get_default_hermes_home()
+    env_home = os.environ.get("HERMES_HOME", "").strip()
+    if env_home:
+        active = Path(env_home).expanduser()
+        profile_name = active.name
+        # Some deployments keep profile trees in a separate volume while
+        # the native registry lives beside it. Reconcile a symlink alias so
+        # profile_exists() agrees with the running gateway.
+        try:
+            active_resolved = active.resolve()
+            registry_parent = active.parent.parent
+            if active.parent.name != "profiles" and registry_parent.is_dir():
+                for candidate in registry_parent.iterdir():
+                    alias = candidate / "profiles" / profile_name
+                    if alias.is_symlink() and alias.resolve() == active_resolved:
+                        return candidate / "profiles"
+        except (OSError, RuntimeError):
+            pass
+    return base / "profiles"
 
 
 def _get_default_hermes_home() -> Path:

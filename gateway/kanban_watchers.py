@@ -882,6 +882,7 @@ class GatewayKanbanWatchersMixin:
             """
             conn = None
             fingerprint = _board_db_fingerprint(slug)
+            board_path = str(_kb.kanban_db_path(slug))
             disabled_entry = disabled_corrupt_boards.get(slug)
             if disabled_entry is not None:
                 disabled_fingerprint, disabled_at = disabled_entry
@@ -906,13 +907,17 @@ class GatewayKanbanWatchersMixin:
                 disabled_corrupt_boards.pop(slug, None)
             try:
                 conn = _kb.connect(board=slug)
+                ready_count = int(conn.execute(
+                    "SELECT COUNT(*) FROM tasks "
+                    "WHERE status = 'ready' AND claim_lock IS NULL"
+                ).fetchone()[0])
                 # `connect()` runs the schema + idempotent migration on
                 # first open per process; the previous explicit
                 # `init_db()` call here busted the per-process cache and
                 # re-ran the migration on a second connection, racing
                 # the first. See the matching comment in
                 # `_kanban_notifier_watcher` and issue #21378.
-                return _kb.dispatch_once(
+                result = _kb.dispatch_once(
                     conn,
                     board=slug,
                     max_spawn=max_spawn,
@@ -922,6 +927,17 @@ class GatewayKanbanWatchersMixin:
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
                 )
+                logger.info(
+                    "kanban dispatcher tick [%s]: db=%s ready=%d spawned=%d "
+                    "nonspawnable=%d unassigned=%d",
+                    slug,
+                    board_path,
+                    ready_count,
+                    len(result.spawned),
+                    len(result.skipped_nonspawnable),
+                    len(result.skipped_unassigned),
+                )
+                return result
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):
                     disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
@@ -935,7 +951,10 @@ class GatewayKanbanWatchersMixin:
                         fingerprint[0],
                     )
                     return None
-                logger.exception("kanban dispatcher: tick failed on board %s", slug)
+                logger.exception(
+                    "kanban dispatcher: tick failed on board %s (db=%s)",
+                    slug, board_path,
+                )
                 return None
             except Exception as exc:
                 if _is_corrupt_board_db_error(exc):
@@ -950,7 +969,10 @@ class GatewayKanbanWatchersMixin:
                         fingerprint[0],
                     )
                     return None
-                logger.exception("kanban dispatcher: tick failed on board %s", slug)
+                logger.exception(
+                    "kanban dispatcher: tick failed on board %s (db=%s)",
+                    slug, board_path,
+                )
                 return None
             finally:
                 if conn is not None:

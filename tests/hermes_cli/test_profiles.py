@@ -1419,6 +1419,21 @@ class TestInternalHelpers:
         root = _get_profiles_root()
         assert root == native / "profiles"
 
+    def test_profiles_root_reconciles_external_profile_alias(self, tmp_path, monkeypatch):
+        """A profile-local HERMES_HOME can use the native shared registry alias."""
+        data_root = tmp_path / "opt" / "data"
+        profile_home = data_root / "hermes-profiles" / "herwiki"
+        registry = data_root / "hermes" / "profiles"
+        profile_home.mkdir(parents=True)
+        registry.mkdir(parents=True)
+        (registry / "herwiki").symlink_to(profile_home, target_is_directory=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        assert _get_profiles_root() == data_root / "hermes" / "profiles"
+        assert get_profile_dir("herwiki") == registry / "herwiki"
+        assert get_profile_dir("herwiki").resolve() == profile_home.resolve()
+
     def test_active_profile_path_docker(self, tmp_path, monkeypatch):
         """In Docker, active_profile file lives under HERMES_HOME."""
         from hermes_cli.profiles import _get_active_profile_path

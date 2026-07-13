@@ -70,6 +70,18 @@ class TestGetDefaultHermesRoot:
         monkeypatch.setenv("HERMES_HOME", str(custom))
         assert get_default_hermes_root() == custom
 
+    def test_external_profile_alias_returns_shared_root(self, tmp_path, monkeypatch):
+        data_root = tmp_path / "opt" / "data"
+        profile_home = data_root / "hermes-profiles" / "herwiki"
+        registry = data_root / "hermes" / "profiles"
+        profile_home.mkdir(parents=True)
+        registry.mkdir(parents=True)
+        (registry / "herwiki").symlink_to(profile_home, target_is_directory=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        assert get_default_hermes_root() == data_root / "hermes"
+
     def test_docker_profile_active(self, tmp_path, monkeypatch):
         """When a Docker profile is active (HERMES_HOME=<root>/profiles/<name>),
         returns the Docker root, not the profile dir."""

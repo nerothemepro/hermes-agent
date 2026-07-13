@@ -140,6 +140,21 @@ def get_default_hermes_root() -> Path:
         pass
 
     # Docker / custom deployment.
+    # A profile may live in a separate volume while the native registry
+    # exposes /<shared-root>/profiles/<name> as a symlink. Reconcile that
+    # alias before falling back to treating the profile directory as root.
+    profile_name = env_path.name
+    registry_parent = env_path.parent.parent
+    if env_path.parent.name != "profiles" and registry_parent.is_dir():
+        try:
+            active_resolved = env_path.resolve()
+            for candidate in registry_parent.iterdir():
+                alias = candidate / "profiles" / profile_name
+                if alias.is_symlink() and alias.resolve() == active_resolved:
+                    return candidate
+        except (OSError, RuntimeError):
+            pass
+
     # Check if this is a profile path: <root>/profiles/<name>
     # If the immediate parent dir is named "profiles", the root is
     # the grandparent — this covers Docker profiles correctly.
