@@ -18,8 +18,11 @@ from gateway.config import Platform
 DEFAULT_PROJECT_PATH = Path("/workspace/hermes-agent-plugin")
 DEFAULT_REGISTRY_DIR = Path("/opt/data/hermes/control-plane/runs")
 PREPARE_BIN = "/workspace/hermes-agent-plugin/bin/hermes-control-plane-prepare"
+HERSOCIAL_APPROVAL_BIN = "/workspace/hermes-agent-plugin/control-plane/hersocial-auto-post/start-hersocial-auto-post.sh"
 RUN_ID_PATTERN = r"run_[a-z0-9]+_[a-z0-9]+"
 GATE_ID_PATTERN = r"[a-z][a-z0-9_]*"
+HERSOCIAL_POST_KEY_PATTERN = r"[a-z0-9][a-z0-9-]{2,80}"
+SHA256_PATTERN = r"[a-f0-9]{64}"
 
 
 @dataclass(frozen=True)
@@ -107,6 +110,10 @@ class ControlPlaneRouter:
             return await self._approve_dispatch(match.group(1))
         if match := re.fullmatch(rf"APPROVE GATE\s+({RUN_ID_PATTERN})\s+({GATE_ID_PATTERN})", text):
             return await self._approve_gate(match.group(1), match.group(2))
+        if match := re.fullmatch(
+            rf"APPROVE HERSOCIAL POST\s+({HERSOCIAL_POST_KEY_PATTERN})\s+({SHA256_PATTERN})", text
+        ):
+            return await self._approve_hersocial_post(match.group(1), match.group(2))
         if match := re.fullmatch(rf"CANCEL RUN\s+({RUN_ID_PATTERN})", text):
             return await self._cancel(match.group(1))
 
@@ -124,7 +131,7 @@ class ControlPlaneRouter:
             "Exact syntax required; no action was taken.\n"
             "/site-audit docs\n/research-brief <topic>\n/status <run_id>\n"
             "APPROVE DISPATCH <run_id>\nAPPROVE GATE <run_id> <gate_id>\n"
-            "CANCEL RUN <run_id>"
+            "APPROVE HERSOCIAL POST <post_key> <sha256>\nCANCEL RUN <run_id>"
         )
 
     async def _prepare(self, template: str, params: dict) -> RouterDecision:
@@ -176,6 +183,23 @@ class ControlPlaneRouter:
             "--run-id", run_id, "--json",
         ])
         return self._cli_result(continued, "Gate approved; run advanced through the audited CLI path.")
+
+    async def _approve_hersocial_post(self, post_key: str, digest: str) -> RouterDecision:
+        result = await self._command([
+            HERSOCIAL_APPROVAL_BIN, "--record-approval", post_key, digest,
+        ])
+        if result is None:
+            return RouterDecision(True, "HerSocial approval is temporarily unavailable; no automatic retry was performed.")
+        if result.returncode != 0:
+            return RouterDecision(True, "HerSocial approval failed closed; no post was published.")
+        payload = self._json_output(result.stdout)
+        if not isinstance(payload, dict) or payload.get("status") != "approved_pending_publish":
+            return RouterDecision(True, "HerSocial approval returned an invalid response; no post was published.")
+        if payload.get("post_key") != post_key or payload.get("content_sha256") != digest:
+            return RouterDecision(True, "HerSocial approval returned mismatched evidence; no post was published.")
+        return RouterDecision(
+            True, "HerSocial approval recorded; the attended publisher will report the final result.",
+        )
 
     async def _cancel(self, run_id: str) -> RouterDecision:
         if self._registry_record(run_id) is None:
