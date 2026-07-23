@@ -69,6 +69,7 @@ class ControlPlaneRouter:
         config = config if isinstance(config, dict) else {}
         self.enabled = config.get("enabled") is True
         self.owner_id = str(config.get("owner_telegram_user_id") or "").strip()
+        self.home_chat_id = self._normalize_chat_id(config.get("home_telegram_chat_id"))
         self.timeout_seconds = self._bounded_timeout(config.get("command_timeout_seconds"))
         self.project_path = Path(config.get("project_path") or DEFAULT_PROJECT_PATH).resolve()
         self.registry_dir = Path(config.get("registry_dir") or DEFAULT_REGISTRY_DIR).resolve()
@@ -79,8 +80,16 @@ class ControlPlaneRouter:
         raw = config.get("control_plane_router") if isinstance(config, dict) else None
         router_config = dict(raw) if isinstance(raw, dict) else {}
         owner_env = str(router_config.get("owner_telegram_user_env") or "HERMES_CONTROL_PLANE_OWNER_TELEGRAM_USER_ID")
+        home_chat_env = str(router_config.get("home_telegram_chat_env") or "")
         router_config.setdefault("owner_telegram_user_id", os.environ.get(owner_env, ""))
+        if home_chat_env:
+            router_config.setdefault("home_telegram_chat_id", os.environ.get(home_chat_env, ""))
         return cls(router_config)
+
+    @staticmethod
+    def _normalize_chat_id(value) -> str:
+        chat_id = str(value or "").strip()
+        return chat_id.split(":", 1)[1] if chat_id.startswith("telegram:") else chat_id
 
     @staticmethod
     def _bounded_timeout(value) -> int:
@@ -99,6 +108,13 @@ class ControlPlaneRouter:
             return RouterDecision(True)
 
         text = (getattr(event, "text", "") or "").strip()
+        # A configured home chat binds control commands to the owner group.
+        # Normal owner conversation outside that group continues to the LLM unchanged.
+        chat_id = self._normalize_chat_id(getattr(event.source, "chat_id", ""))
+        if self.home_chat_id and chat_id != self.home_chat_id:
+            if self._looks_like_control_attempt(text):
+                return RouterDecision(True)
+            return RouterDecision(False)
         if match := re.fullmatch(r"/site-audit\s+(docs|sdtk_public_web)", text):
             scope = "sdtk_public_web" if match.group(1) == "docs" else match.group(1)
             return await self._prepare("site_audit", {"scope": scope})
