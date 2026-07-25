@@ -18,8 +18,11 @@ from gateway.config import Platform
 DEFAULT_PROJECT_PATH = Path("/workspace/hermes-agent-plugin")
 DEFAULT_REGISTRY_DIR = Path("/opt/data/hermes/control-plane/runs")
 PREPARE_BIN = "/workspace/hermes-agent-plugin/bin/hermes-control-plane-prepare"
+HERSOCIAL_APPROVAL_BIN = "/workspace/hermes-agent-plugin/control-plane/hersocial-auto-post/start-hersocial-auto-post.sh"
 RUN_ID_PATTERN = r"run_[a-z0-9]+_[a-z0-9]+"
 GATE_ID_PATTERN = r"[a-z][a-z0-9_]*"
+HERSOCIAL_POST_KEY_PATTERN = r"[a-z0-9][a-z0-9-]{2,80}"
+SHA256_PATTERN = r"[a-f0-9]{64}"
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,7 @@ class ControlPlaneRouter:
         config = config if isinstance(config, dict) else {}
         self.enabled = config.get("enabled") is True
         self.owner_id = str(config.get("owner_telegram_user_id") or "").strip()
+        self.home_chat_id = self._normalize_chat_id(config.get("home_telegram_chat_id"))
         self.timeout_seconds = self._bounded_timeout(config.get("command_timeout_seconds"))
         self.project_path = Path(config.get("project_path") or DEFAULT_PROJECT_PATH).resolve()
         self.registry_dir = Path(config.get("registry_dir") or DEFAULT_REGISTRY_DIR).resolve()
@@ -76,8 +80,16 @@ class ControlPlaneRouter:
         raw = config.get("control_plane_router") if isinstance(config, dict) else None
         router_config = dict(raw) if isinstance(raw, dict) else {}
         owner_env = str(router_config.get("owner_telegram_user_env") or "HERMES_CONTROL_PLANE_OWNER_TELEGRAM_USER_ID")
+        home_chat_env = str(router_config.get("home_telegram_chat_env") or "")
         router_config.setdefault("owner_telegram_user_id", os.environ.get(owner_env, ""))
+        if home_chat_env:
+            router_config.setdefault("home_telegram_chat_id", os.environ.get(home_chat_env, ""))
         return cls(router_config)
+
+    @staticmethod
+    def _normalize_chat_id(value) -> str:
+        chat_id = str(value or "").strip()
+        return chat_id.split(":", 1)[1] if chat_id.startswith("telegram:") else chat_id
 
     @staticmethod
     def _bounded_timeout(value) -> int:
@@ -96,6 +108,13 @@ class ControlPlaneRouter:
             return RouterDecision(True)
 
         text = (getattr(event, "text", "") or "").strip()
+        # A configured home chat binds control commands to the owner group.
+        # Normal owner conversation outside that group continues to the LLM unchanged.
+        chat_id = self._normalize_chat_id(getattr(event.source, "chat_id", ""))
+        if self.home_chat_id and chat_id != self.home_chat_id:
+            if self._looks_like_control_attempt(text):
+                return RouterDecision(True)
+            return RouterDecision(False)
         if match := re.fullmatch(r"/site-audit\s+(docs|sdtk_public_web)", text):
             scope = "sdtk_public_web" if match.group(1) == "docs" else match.group(1)
             return await self._prepare("site_audit", {"scope": scope})
@@ -107,6 +126,10 @@ class ControlPlaneRouter:
             return await self._approve_dispatch(match.group(1))
         if match := re.fullmatch(rf"APPROVE GATE\s+({RUN_ID_PATTERN})\s+({GATE_ID_PATTERN})", text):
             return await self._approve_gate(match.group(1), match.group(2))
+        if match := re.fullmatch(
+            rf"APPROVE HERSOCIAL POST\s+({HERSOCIAL_POST_KEY_PATTERN})\s+({SHA256_PATTERN})", text
+        ):
+            return await self._approve_hersocial_post(match.group(1), match.group(2))
         if match := re.fullmatch(rf"CANCEL RUN\s+({RUN_ID_PATTERN})", text):
             return await self._cancel(match.group(1))
 
@@ -124,7 +147,7 @@ class ControlPlaneRouter:
             "Exact syntax required; no action was taken.\n"
             "/site-audit docs\n/research-brief <topic>\n/status <run_id>\n"
             "APPROVE DISPATCH <run_id>\nAPPROVE GATE <run_id> <gate_id>\n"
-            "CANCEL RUN <run_id>"
+            "APPROVE HERSOCIAL POST <post_key> <sha256>\nCANCEL RUN <run_id>"
         )
 
     async def _prepare(self, template: str, params: dict) -> RouterDecision:
@@ -176,6 +199,23 @@ class ControlPlaneRouter:
             "--run-id", run_id, "--json",
         ])
         return self._cli_result(continued, "Gate approved; run advanced through the audited CLI path.")
+
+    async def _approve_hersocial_post(self, post_key: str, digest: str) -> RouterDecision:
+        result = await self._command([
+            HERSOCIAL_APPROVAL_BIN, "--record-approval", post_key, digest,
+        ])
+        if result is None:
+            return RouterDecision(True, "HerSocial approval is temporarily unavailable; no automatic retry was performed.")
+        if result.returncode != 0:
+            return RouterDecision(True, "HerSocial approval failed closed; no post was published.")
+        payload = self._json_output(result.stdout)
+        if not isinstance(payload, dict) or payload.get("status") != "approved_pending_publish":
+            return RouterDecision(True, "HerSocial approval returned an invalid response; no post was published.")
+        if payload.get("post_key") != post_key or payload.get("content_sha256") != digest:
+            return RouterDecision(True, "HerSocial approval returned mismatched evidence; no post was published.")
+        return RouterDecision(
+            True, "HerSocial approval recorded; the attended publisher will report the final result.",
+        )
 
     async def _cancel(self, run_id: str) -> RouterDecision:
         if self._registry_record(run_id) is None:
