@@ -66,6 +66,50 @@ async def test_exact_owner_approval_records_bounded_command() -> None:
 
 
 @pytest.mark.asyncio
+async def test_exact_owner_approval_reports_confirmed_published_url() -> None:
+    runner = AsyncMock(
+        return_value=SimpleNamespace(
+            returncode=0,
+            stdout=(
+                '{"status":"published",'
+                f'"post_key":"{POST_KEY}","content_sha256":"{DIGEST}",'
+                '"video_url":"https://www.facebook.com/reel/example"}'
+            ),
+            stderr="",
+        )
+    )
+
+    decision = await _router(runner).handle(
+        _event(f"APPROVE HERSOCIAL POST {POST_KEY} {DIGEST}")
+    )
+
+    assert decision.handled is True
+    assert "published" in (decision.response or "")
+    assert "https://www.facebook.com/reel/example" in (decision.response or "")
+
+
+@pytest.mark.asyncio
+async def test_published_response_without_https_permalink_fails_closed() -> None:
+    runner = AsyncMock(
+        return_value=SimpleNamespace(
+            returncode=0,
+            stdout=(
+                '{"status":"published",'
+                f'"post_key":"{POST_KEY}","content_sha256":"{DIGEST}",'
+                '"video_url":"/reel/not-a-permalink"}'
+            ),
+            stderr="",
+        )
+    )
+
+    decision = await _router(runner).handle(
+        _event(f"APPROVE HERSOCIAL POST {POST_KEY} {DIGEST}")
+    )
+
+    assert "lacked a valid permalink" in (decision.response or "")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "text",
     [
