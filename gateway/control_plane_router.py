@@ -25,6 +25,28 @@ HERSOCIAL_POST_KEY_PATTERN = r"[a-z0-9][a-z0-9-]{2,80}"
 SHA256_PATTERN = r"[a-f0-9]{64}"
 
 
+def _command_start_kwargs(*, is_windows: bool | None = None) -> dict[str, int | bool]:
+    windows = os.name == "nt" if is_windows is None else is_windows
+    if windows:
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {"start_new_session": True}
+
+
+def _terminate_timed_out_process(
+    process: subprocess.Popen, *, is_windows: bool | None = None
+) -> None:
+    windows = os.name == "nt" if is_windows is None else is_windows
+    if windows:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return
+    os.killpg(process.pid, signal.SIGKILL)  # windows-footgun: ok - POSIX-only branch
+
+
 @dataclass(frozen=True)
 class RouterDecision:
     handled: bool
@@ -41,7 +63,7 @@ async def _default_command_runner(argv: list[str], timeout_seconds: int) -> Simp
             stderr=subprocess.PIPE,
             text=True,
             env=env,
-            start_new_session=True,
+            **_command_start_kwargs(),
         )
         try:
             stdout, stderr = process.communicate(timeout=timeout_seconds)
@@ -49,7 +71,7 @@ async def _default_command_runner(argv: list[str], timeout_seconds: int) -> Simp
             # The prepare helper can synchronously invoke sdtk-agent. Kill the
             # entire process group so a timeout cannot leave an orphaned child
             # mutating state after the owner received a fail-closed reply.
-            os.killpg(process.pid, signal.SIGKILL)
+            _terminate_timed_out_process(process)
             process.communicate()
             raise TimeoutError from error
         return SimpleNamespace(returncode=process.returncode, stdout=stdout, stderr=stderr)
@@ -212,14 +234,19 @@ class ControlPlaneRouter:
         if result.returncode != 0:
             return RouterDecision(True, "HerSocial approval failed closed; no post was published.")
         payload = self._json_output(result.stdout)
-        if not isinstance(payload, dict) or payload.get("status") not in {"approved_pending_publish", "published"}:
+        if not isinstance(payload, dict) or payload.get("status") not in {"approved_pending_publish", "uploaded", "published"}:
             return RouterDecision(True, "HerSocial approval returned an invalid response; no post was published.")
         if payload.get("post_key") != post_key or payload.get("content_sha256") != digest:
             return RouterDecision(True, "HerSocial approval returned mismatched evidence; no post was published.")
-        if payload.get("status") == "published":
+        if payload.get("status") in {"uploaded", "published"}:
             video_url = payload.get("video_url")
             if not isinstance(video_url, str) or not re.fullmatch(r"https://[^\s]+", video_url):
                 return RouterDecision(True, "HerSocial publish response lacked a valid permalink; no publish was confirmed.")
+            if payload.get("status") == "uploaded":
+                visibility_state = payload.get("visibility_state")
+                if visibility_state not in {"unpublished", "unlisted", "private"}:
+                    return RouterDecision(True, "HerSocial upload response lacked a valid non-public visibility state; no public post was confirmed.")
+                return RouterDecision(True, f"HerSocial video uploaded for review ({visibility_state}): {video_url}")
             return RouterDecision(True, f"HerSocial post published: {video_url}")
         return RouterDecision(
             True, "HerSocial approval recorded; the attended publisher will report the final result.",

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+import gateway.control_plane_router as router_module
 from gateway.config import Platform
 from gateway.control_plane_router import ControlPlaneRouter
 from gateway.platforms.base import MessageEvent
@@ -99,6 +100,31 @@ async def test_normal_owner_message_passes_through_unchanged() -> None:
     assert decision.response is None
 
 
+def test_command_runner_uses_windows_process_group_when_needed() -> None:
+    assert router_module._command_start_kwargs(is_windows=True) == {
+        "creationflags": getattr(router_module.subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+    }
+
+
+def test_timeout_cleanup_uses_taskkill_tree_on_windows(monkeypatch) -> None:
+    calls = []
+
+    def _run(argv, **kwargs):
+        calls.append((argv, kwargs))
+
+    monkeypatch.setattr(router_module.subprocess, "run", _run)
+    router_module._terminate_timed_out_process(SimpleNamespace(pid=12345), is_windows=True)
+
+    assert calls == [(
+        ["taskkill", "/F", "/T", "/PID", "12345"],
+        {
+            "stdout": router_module.subprocess.DEVNULL,
+            "stderr": router_module.subprocess.DEVNULL,
+            "check": False,
+        },
+    )]
+
+
 @pytest.mark.asyncio
 async def test_site_audit_uses_bounded_prepare_command_and_returns_preview() -> None:
     command_runner = AsyncMock(return_value=SimpleNamespace(
@@ -115,6 +141,41 @@ async def test_site_audit_uses_bounded_prepare_command_and_returns_preview() -> 
     argv = command_runner.await_args.args[0]
     assert argv[:3] == ["node", "/workspace/hermes-agent-plugin/bin/hermes-control-plane-prepare", "--template"]
     assert "site_audit" in argv
+
+
+@pytest.mark.asyncio
+async def test_hersocial_unpublished_upload_is_reported_as_reviewable_draft() -> None:
+    post_key = "social-video-facebook-0123456789abcdef"
+    digest = "a" * 64
+    command_runner = AsyncMock(return_value=SimpleNamespace(
+        returncode=0,
+        stdout=(
+            '{"status":"uploaded","post_key":"' + post_key + '",'
+            '"content_sha256":"' + digest + '",'
+            '"video_url":"https://www.facebook.com/reel/draft-example/",'
+            '"visibility_state":"unpublished",'
+            '"next_action":"manual_visibility_review_required"}'
+        ),
+        stderr="",
+    ))
+    router = ControlPlaneRouter(
+        {
+            "enabled": True,
+            "owner_telegram_user_id": OWNER_ID,
+            "hersocial_approval_enabled": True,
+            "command_timeout_seconds": 7,
+        },
+        command_runner=command_runner,
+    )
+
+    decision = await router.handle(_event(f"APPROVE HERSOCIAL POST {post_key} {digest}"))
+
+    assert decision.handled is True
+    assert "uploaded for review" in (decision.response or "")
+    assert "unpublished" in (decision.response or "")
+    assert "https://www.facebook.com/reel/draft-example/" in (decision.response or "")
+    assert "post published" not in (decision.response or "").lower()
+
 
 
 @pytest.mark.asyncio
