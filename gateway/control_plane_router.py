@@ -25,6 +25,28 @@ HERSOCIAL_POST_KEY_PATTERN = r"[a-z0-9][a-z0-9-]{2,80}"
 SHA256_PATTERN = r"[a-f0-9]{64}"
 
 
+def _command_start_kwargs(*, is_windows: bool | None = None) -> dict[str, int | bool]:
+    windows = os.name == "nt" if is_windows is None else is_windows
+    if windows:
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {"start_new_session": True}
+
+
+def _terminate_timed_out_process(
+    process: subprocess.Popen, *, is_windows: bool | None = None
+) -> None:
+    windows = os.name == "nt" if is_windows is None else is_windows
+    if windows:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return
+    os.killpg(process.pid, signal.SIGKILL)  # windows-footgun: ok - POSIX-only branch
+
+
 @dataclass(frozen=True)
 class RouterDecision:
     handled: bool
@@ -41,7 +63,7 @@ async def _default_command_runner(argv: list[str], timeout_seconds: int) -> Simp
             stderr=subprocess.PIPE,
             text=True,
             env=env,
-            start_new_session=True,
+            **_command_start_kwargs(),
         )
         try:
             stdout, stderr = process.communicate(timeout=timeout_seconds)
@@ -49,7 +71,7 @@ async def _default_command_runner(argv: list[str], timeout_seconds: int) -> Simp
             # The prepare helper can synchronously invoke sdtk-agent. Kill the
             # entire process group so a timeout cannot leave an orphaned child
             # mutating state after the owner received a fail-closed reply.
-            os.killpg(process.pid, signal.SIGKILL)
+            _terminate_timed_out_process(process)
             process.communicate()
             raise TimeoutError from error
         return SimpleNamespace(returncode=process.returncode, stdout=stdout, stderr=stderr)
