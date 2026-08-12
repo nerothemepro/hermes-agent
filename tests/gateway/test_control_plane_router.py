@@ -118,6 +118,41 @@ async def test_site_audit_uses_bounded_prepare_command_and_returns_preview() -> 
 
 
 @pytest.mark.asyncio
+async def test_hersocial_unpublished_upload_is_reported_as_reviewable_draft() -> None:
+    post_key = "social-video-facebook-0123456789abcdef"
+    digest = "a" * 64
+    command_runner = AsyncMock(return_value=SimpleNamespace(
+        returncode=0,
+        stdout=(
+            '{"status":"uploaded","post_key":"' + post_key + '",'
+            '"content_sha256":"' + digest + '",'
+            '"video_url":"https://www.facebook.com/reel/draft-example/",'
+            '"visibility_state":"unpublished",'
+            '"next_action":"manual_visibility_review_required"}'
+        ),
+        stderr="",
+    ))
+    router = ControlPlaneRouter(
+        {
+            "enabled": True,
+            "owner_telegram_user_id": OWNER_ID,
+            "hersocial_approval_enabled": True,
+            "command_timeout_seconds": 7,
+        },
+        command_runner=command_runner,
+    )
+
+    decision = await router.handle(_event(f"APPROVE HERSOCIAL POST {post_key} {digest}"))
+
+    assert decision.handled is True
+    assert "uploaded for review" in (decision.response or "")
+    assert "unpublished" in (decision.response or "")
+    assert "https://www.facebook.com/reel/draft-example/" in (decision.response or "")
+    assert "post published" not in (decision.response or "").lower()
+
+
+
+@pytest.mark.asyncio
 async def test_cli_timeout_returns_fail_closed_reply_without_retry() -> None:
     async def _timeout(_argv, _timeout_seconds):
         raise TimeoutError

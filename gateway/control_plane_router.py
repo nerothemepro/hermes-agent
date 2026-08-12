@@ -212,14 +212,19 @@ class ControlPlaneRouter:
         if result.returncode != 0:
             return RouterDecision(True, "HerSocial approval failed closed; no post was published.")
         payload = self._json_output(result.stdout)
-        if not isinstance(payload, dict) or payload.get("status") not in {"approved_pending_publish", "published"}:
+        if not isinstance(payload, dict) or payload.get("status") not in {"approved_pending_publish", "uploaded", "published"}:
             return RouterDecision(True, "HerSocial approval returned an invalid response; no post was published.")
         if payload.get("post_key") != post_key or payload.get("content_sha256") != digest:
             return RouterDecision(True, "HerSocial approval returned mismatched evidence; no post was published.")
-        if payload.get("status") == "published":
+        if payload.get("status") in {"uploaded", "published"}:
             video_url = payload.get("video_url")
             if not isinstance(video_url, str) or not re.fullmatch(r"https://[^\s]+", video_url):
                 return RouterDecision(True, "HerSocial publish response lacked a valid permalink; no publish was confirmed.")
+            if payload.get("status") == "uploaded":
+                visibility_state = payload.get("visibility_state")
+                if visibility_state not in {"unpublished", "unlisted", "private"}:
+                    return RouterDecision(True, "HerSocial upload response lacked a valid non-public visibility state; no public post was confirmed.")
+                return RouterDecision(True, f"HerSocial video uploaded for review ({visibility_state}): {video_url}")
             return RouterDecision(True, f"HerSocial post published: {video_url}")
         return RouterDecision(
             True, "HerSocial approval recorded; the attended publisher will report the final result.",
