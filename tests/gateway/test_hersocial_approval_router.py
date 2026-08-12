@@ -31,7 +31,12 @@ def _event(text: str, user_id: str = OWNER_ID, chat_id: str = OWNER_ID) -> Messa
 
 
 def _router(runner, home_chat_id: str | None = None) -> ControlPlaneRouter:
-    config = {"enabled": True, "owner_telegram_user_id": OWNER_ID, "command_timeout_seconds": 7}
+    config = {
+        "enabled": True,
+        "owner_telegram_user_id": OWNER_ID,
+        "command_timeout_seconds": 7,
+        "hersocial_approval_enabled": True,
+    }
     if home_chat_id is not None:
         config["home_telegram_chat_id"] = home_chat_id
     return ControlPlaneRouter(
@@ -201,3 +206,22 @@ def test_home_chat_env_supports_telegram_prefix(monkeypatch) -> None:
         }
     })
     assert router.home_chat_id == "-100123"
+
+
+@pytest.mark.asyncio
+async def test_hersocial_approval_is_silently_dropped_when_profile_has_not_enabled_it() -> None:
+    runner = AsyncMock()
+    router = ControlPlaneRouter(
+        {
+            "enabled": True,
+            "owner_telegram_user_id": OWNER_ID,
+            "hersocial_approval_enabled": False,
+        },
+        command_runner=runner,
+    )
+
+    decision = await router.handle(_event(f"APPROVE HERSOCIAL POST {POST_KEY} {DIGEST}"))
+
+    assert decision.handled is True
+    assert decision.response is None
+    runner.assert_not_awaited()
