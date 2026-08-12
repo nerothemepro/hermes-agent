@@ -70,6 +70,7 @@ class ControlPlaneRouter:
         self.enabled = config.get("enabled") is True
         self.owner_id = str(config.get("owner_telegram_user_id") or "").strip()
         self.home_chat_id = self._normalize_chat_id(config.get("home_telegram_chat_id"))
+        self.hersocial_approval_enabled = config.get("hersocial_approval_enabled") is True
         self.timeout_seconds = self._bounded_timeout(config.get("command_timeout_seconds"))
         self.project_path = Path(config.get("project_path") or DEFAULT_PROJECT_PATH).resolve()
         self.registry_dir = Path(config.get("registry_dir") or DEFAULT_REGISTRY_DIR).resolve()
@@ -129,6 +130,8 @@ class ControlPlaneRouter:
         if match := re.fullmatch(
             rf"APPROVE HERSOCIAL POST\s+({HERSOCIAL_POST_KEY_PATTERN})\s+({SHA256_PATTERN})", text
         ):
+            if not self.hersocial_approval_enabled:
+                return RouterDecision(True)
             return await self._approve_hersocial_post(match.group(1), match.group(2))
         if match := re.fullmatch(rf"CANCEL RUN\s+({RUN_ID_PATTERN})", text):
             return await self._cancel(match.group(1))
