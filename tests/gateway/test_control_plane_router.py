@@ -31,12 +31,13 @@ def _event(text: str, user_id: str = OWNER_ID) -> MessageEvent:
     )
 
 
-def _router(*, enabled: bool = True, runner=None) -> ControlPlaneRouter:
+def _router(*, enabled: bool = True, marketing_video_ep2_enabled: bool = False, runner=None) -> ControlPlaneRouter:
     return ControlPlaneRouter(
         {
             "enabled": enabled,
             "owner_telegram_user_id": OWNER_ID,
             "command_timeout_seconds": 7,
+            "marketing_video_ep2_enabled": marketing_video_ep2_enabled,
         },
         command_runner=runner,
     )
@@ -71,6 +72,8 @@ async def test_disabled_flag_preserves_normal_gateway_passthrough() -> None:
         "/site-audit docs extra",
         "/site_audit sdtk_public_web",
         "APPROVE DISPATCH run_not-a-run",
+        "/marketing-video ep2",
+        "/marketing-video ep2-usage extra",
     ],
 )
 async def test_owner_invalid_or_partial_grammar_is_refused_without_cli(text: str) -> None:
@@ -176,6 +179,37 @@ async def test_hersocial_unpublished_upload_is_reported_as_reviewable_draft() ->
     assert "https://www.facebook.com/reel/draft-example/" in (decision.response or "")
     assert "post published" not in (decision.response or "").lower()
 
+
+
+@pytest.mark.asyncio
+async def test_marketing_video_ep2_exact_command_prepares_fixed_template_only() -> None:
+    command_runner = AsyncMock(return_value=SimpleNamespace(
+        returncode=0,
+        stdout='{"status":"prepared_waiting_for_exact_dispatch_approval","run_id":"run_abc123_def456","preview":{"task_count":7,"gate_count":5,"profile":"multi-profile","deadline_minutes":120,"cost_band":"high"}}',
+        stderr="",
+    ))
+
+    decision = await _router(marketing_video_ep2_enabled=True, runner=command_runner).handle(_event("/marketing-video ep2-usage"))
+
+    assert decision.handled is True
+    assert "run_abc123_def456" in (decision.response or "")
+    assert "APPROVE DISPATCH run_abc123_def456" in (decision.response or "")
+    argv = command_runner.await_args.args[0]
+    assert argv[:3] == ["node", "/workspace/hermes-agent-plugin/bin/hermes-control-plane-prepare", "--template"]
+    assert "marketing_video_ep_usage" in argv
+    assert "--params" in argv
+    assert argv[argv.index("--params") + 1] == "{}"
+
+
+@pytest.mark.asyncio
+async def test_marketing_video_ep2_disabled_flag_creates_no_run() -> None:
+    command_runner = AsyncMock()
+
+    decision = await _router(marketing_video_ep2_enabled=False, runner=command_runner).handle(_event("/marketing-video ep2-usage"))
+
+    assert decision.handled is True
+    assert decision.response is None
+    command_runner.assert_not_awaited()
 
 
 @pytest.mark.asyncio
