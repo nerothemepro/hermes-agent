@@ -93,6 +93,7 @@ class ControlPlaneRouter:
         self.owner_id = str(config.get("owner_telegram_user_id") or "").strip()
         self.home_chat_id = self._normalize_chat_id(config.get("home_telegram_chat_id"))
         self.hersocial_approval_enabled = config.get("hersocial_approval_enabled") is True
+        self.marketing_video_ep2_enabled = config.get("marketing_video_ep2_enabled") is True
         self.timeout_seconds = self._bounded_timeout(config.get("command_timeout_seconds"))
         self.project_path = Path(config.get("project_path") or DEFAULT_PROJECT_PATH).resolve()
         self.registry_dir = Path(config.get("registry_dir") or DEFAULT_REGISTRY_DIR).resolve()
@@ -143,6 +144,10 @@ class ControlPlaneRouter:
             return await self._prepare("site_audit", {"scope": scope})
         if match := re.fullmatch(r"/research-brief\s+([^\r\n]{3,240})", text):
             return await self._prepare("research_brief", {"topic": match.group(1).strip()})
+        if text == "/marketing-video ep2-usage":
+            if not self.marketing_video_ep2_enabled:
+                return RouterDecision(True)
+            return await self._prepare("marketing_video_ep_usage", {})
         if match := re.fullmatch(rf"(?:/status|STATUS)\s+({RUN_ID_PATTERN})", text):
             return self._status(match.group(1))
         if match := re.fullmatch(rf"APPROVE DISPATCH\s+({RUN_ID_PATTERN})", text):
@@ -170,7 +175,7 @@ class ControlPlaneRouter:
     def _syntax_refusal() -> str:
         return (
             "Exact syntax required; no action was taken.\n"
-            "/site-audit docs\n/research-brief <topic>\n/status <run_id>\n"
+            "/site-audit docs\n/research-brief <topic>\n/marketing-video ep2-usage\n/status <run_id>\n"
             "APPROVE DISPATCH <run_id>\nAPPROVE GATE <run_id> <gate_id>\n"
             "APPROVE HERSOCIAL POST <post_key> <sha256>\nCANCEL RUN <run_id>"
         )

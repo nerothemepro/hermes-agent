@@ -9,6 +9,7 @@ Add this to the HerOrches `config.yaml` only after the deployment PR is reviewed
 ```yaml
 control_plane_router:
   enabled: false
+  marketing_video_ep2_enabled: false
   owner_telegram_user_env: HERMES_CONTROL_PLANE_OWNER_TELEGRAM_USER_ID
   command_timeout_seconds: 15
   project_path: /workspace/hermes-agent-plugin
@@ -30,6 +31,7 @@ The router accepts only these owner commands:
 ```text
 /site-audit docs
 /research-brief <topic>
+/marketing-video ep2-usage
 /status <run_id>
 STATUS <run_id>
 APPROVE DISPATCH <run_id>
@@ -42,6 +44,7 @@ Other senders are silently dropped before parsing. Invalid, partial, or natural-
 ## Execution Contract
 
 - Template preparation uses the Phase A `hermes-control-plane-prepare` helper.
+- `/marketing-video ep2-usage` is disabled by default and, when enabled, can prepare only the fixed attended Episode 2 template. It never dispatches a worker.
 - Dispatch, gate approval, and cancellation use audited `sdtk-agent` CLI invocations only.
 - The router invokes commands as argv lists, with a bounded 1--30 second timeout and no automatic retry.
 - Timeout or CLI errors produce a short fail-closed owner reply without exposing stderr, tokens, or command output.
