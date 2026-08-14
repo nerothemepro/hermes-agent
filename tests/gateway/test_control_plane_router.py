@@ -109,6 +109,12 @@ def test_command_runner_uses_windows_process_group_when_needed() -> None:
     }
 
 
+def test_router_defaults_command_timeout_to_maximum_bounded_value() -> None:
+    router = ControlPlaneRouter({"enabled": True, "owner_telegram_user_id": OWNER_ID})
+
+    assert router.timeout_seconds == 30
+
+
 def test_timeout_cleanup_uses_taskkill_tree_on_windows(monkeypatch) -> None:
     calls = []
 
@@ -210,6 +216,28 @@ async def test_marketing_video_ep2_disabled_flag_creates_no_run() -> None:
     assert decision.handled is True
     assert decision.response is None
     command_runner.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_timeout_reports_recorded_external_dispatch_without_retry(monkeypatch) -> None:
+    run_id = "run_abc123_def456"
+
+    async def _timeout(_argv, _timeout_seconds):
+        raise TimeoutError
+
+    router = _router(marketing_video_ep2_enabled=True, runner=_timeout)
+    states = iter([
+        {"status": "created", "tasks": {"research_evidence": {"status": "created"}}},
+        {"status": "running", "tasks": {"research_evidence": {"status": "running_external"}}},
+    ])
+    monkeypatch.setattr(router, "_registry_record", lambda _run_id: {"run_id": run_id})
+    monkeypatch.setattr(router, "_state", lambda _run_id: next(states))
+
+    decision = await router.handle(_event(f"APPROVE DISPATCH {run_id}"))
+
+    assert decision.handled is True
+    assert "Dispatch started" in (decision.response or "")
+    assert "unavailable" not in (decision.response or "")
 
 
 @pytest.mark.asyncio
