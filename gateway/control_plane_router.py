@@ -23,6 +23,7 @@ RUN_ID_PATTERN = r"run_[a-z0-9]+_[a-z0-9]+"
 GATE_ID_PATTERN = r"[a-z][a-z0-9_]*"
 HERSOCIAL_POST_KEY_PATTERN = r"[a-z0-9][a-z0-9-]{2,80}"
 SHA256_PATTERN = r"[a-f0-9]{64}"
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
 
 
 def _command_start_kwargs(*, is_windows: bool | None = None) -> dict[str, int | bool]:
@@ -118,9 +119,9 @@ class ControlPlaneRouter:
     @staticmethod
     def _bounded_timeout(value) -> int:
         try:
-            return min(30, max(1, int(value)))
+            return min(DEFAULT_COMMAND_TIMEOUT_SECONDS, max(1, int(value)))
         except (TypeError, ValueError):
-            return 15
+            return DEFAULT_COMMAND_TIMEOUT_SECONDS
 
     async def handle(self, event) -> RouterDecision:
         if not self.enabled or getattr(event.source, "platform", None) != Platform.TELEGRAM:
@@ -208,11 +209,32 @@ class ControlPlaneRouter:
     async def _approve_dispatch(self, run_id: str) -> RouterDecision:
         if self._registry_record(run_id) is None:
             return RouterDecision(True, "Unknown run_id; no action was taken.")
+        before = self._external_task_ids(self._state(run_id))
         result = await self._command([
             "sdtk-agent", "run", "continue", "--project-path", str(self.project_path),
             "--run-id", run_id, "--confirm", "--json",
         ])
+        if result is None:
+            # A bounded CLI call can time out after the durable ledger has already
+            # recorded one or more external submissions. Re-read state only; never
+            # retry a possibly-mutating command from the router.
+            started = self._external_task_ids(self._state(run_id)) - before
+            if started:
+                return RouterDecision(
+                    True,
+                    "Dispatch started; monitor will report progress. No automatic retry was performed.",
+                )
         return self._cli_result(result, "Dispatch accepted; monitor will report progress.")
+
+    @staticmethod
+    def _external_task_ids(state: dict | None) -> set[str]:
+        tasks = state.get("tasks") if isinstance(state, dict) else None
+        if not isinstance(tasks, dict):
+            return set()
+        return {
+            task_id for task_id, task in tasks.items()
+            if isinstance(task, dict) and task.get("status") in {"running_external", "waiting_external_evidence"}
+        }
 
     async def _approve_gate(self, run_id: str, gate_id: str) -> RouterDecision:
         state = self._state(run_id)

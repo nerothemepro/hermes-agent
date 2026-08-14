@@ -11,7 +11,7 @@ control_plane_router:
   enabled: false
   marketing_video_ep2_enabled: false
   owner_telegram_user_env: HERMES_CONTROL_PLANE_OWNER_TELEGRAM_USER_ID
-  command_timeout_seconds: 15
+  command_timeout_seconds: 30
   project_path: /workspace/hermes-agent-plugin
   registry_dir: /opt/data/hermes/control-plane/runs
 ```
@@ -47,5 +47,5 @@ Other senders are silently dropped before parsing. Invalid, partial, or natural-
 - `/marketing-video ep2-usage` is disabled by default and, when enabled, can prepare only the fixed attended Episode 2 template. It never dispatches a worker.
 - Dispatch, gate approval, and cancellation use audited `sdtk-agent` CLI invocations only.
 - The router invokes commands as argv lists, with a bounded 1--30 second timeout and no automatic retry.
-- Timeout or CLI errors produce a short fail-closed owner reply without exposing stderr, tokens, or command output.
+- Timeout or CLI errors produce a short fail-closed owner reply without exposing stderr, tokens, or command output. If a dispatch timeout occurs after durable external-task submission, the router reads the ledger once and reports that dispatch started; it never retries the command.
 - The router never polls progress, sends monitor notifications, retries tasks, archives cards, or decides approvals. The Phase B monitor remains responsible for progress observation and Telegram completion/gate notifications.
