@@ -228,7 +228,7 @@ async def test_dispatch_timeout_reports_recorded_external_dispatch_without_retry
     router = _router(marketing_video_ep2_enabled=True, runner=_timeout)
     states = iter([
         {"status": "created", "tasks": {"research_evidence": {"status": "created"}}},
-        {"status": "running", "tasks": {"research_evidence": {"status": "running_external"}}},
+        {"status": "running", "tasks": {"research_evidence": {"status": "running_external", "external_ids": {"hermes_task_id": "t_new"}}}},
     ])
     monkeypatch.setattr(router, "_registry_record", lambda _run_id: {"run_id": run_id})
     monkeypatch.setattr(router, "_state", lambda _run_id: next(states))
@@ -236,8 +236,31 @@ async def test_dispatch_timeout_reports_recorded_external_dispatch_without_retry
     decision = await router.handle(_event(f"APPROVE DISPATCH {run_id}"))
 
     assert decision.handled is True
-    assert "Dispatch started" in (decision.response or "")
+    assert "Dispatch submitted" in (decision.response or "")
     assert "unavailable" not in (decision.response or "")
+
+
+@pytest.mark.asyncio
+async def test_dispatch_nonzero_after_recorded_terminal_submission_reports_submitted(monkeypatch) -> None:
+    run_id = "run_abc123_def456"
+    command_runner = AsyncMock(return_value=SimpleNamespace(returncode=1, stdout="", stderr="worker blocked"))
+    router = _router(marketing_video_ep2_enabled=True, runner=command_runner)
+    states = iter([
+        {"status": "running", "tasks": {"research_evidence": {"status": "ready"}}},
+        {"status": "blocked", "tasks": {"research_evidence": {
+            "status": "blocked",
+            "external_ids": {"hermes_task_id": "t_terminal"},
+        }}},
+    ])
+    monkeypatch.setattr(router, "_registry_record", lambda _run_id: {"run_id": run_id})
+    monkeypatch.setattr(router, "_state", lambda _run_id: next(states))
+
+    decision = await router.handle(_event(f"APPROVE DISPATCH {run_id}"))
+
+    assert decision.handled is True
+    assert "Dispatch submitted" in (decision.response or "")
+    assert "failed closed" not in (decision.response or "")
+    command_runner.assert_awaited_once()
 
 
 @pytest.mark.asyncio
