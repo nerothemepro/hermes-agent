@@ -209,32 +209,38 @@ class ControlPlaneRouter:
     async def _approve_dispatch(self, run_id: str) -> RouterDecision:
         if self._registry_record(run_id) is None:
             return RouterDecision(True, "Unknown run_id; no action was taken.")
-        before = self._external_task_ids(self._state(run_id))
+        before = self._external_submission_ids(self._state(run_id))
         result = await self._command([
             "sdtk-agent", "run", "continue", "--project-path", str(self.project_path),
             "--run-id", run_id, "--confirm", "--json",
         ])
-        if result is None:
-            # A bounded CLI call can time out after the durable ledger has already
-            # recorded one or more external submissions. Re-read state only; never
-            # retry a possibly-mutating command from the router.
-            started = self._external_task_ids(self._state(run_id)) - before
-            if started:
-                return RouterDecision(
-                    True,
-                    "Dispatch started; monitor will report progress. No automatic retry was performed.",
-                )
+        # The durable ledger may record a Hermes task id before run continue
+        # returns a non-zero outcome (for example, a worker completes or blocks
+        # during the same command). Submission evidence is authoritative here:
+        # re-read state, never retry a potentially mutating command.
+        submitted = self._external_submission_ids(self._state(run_id)) - before
+        if submitted:
+            return RouterDecision(
+                True,
+                "Dispatch submitted; monitor will report worker status. No automatic retry was performed.",
+            )
         return self._cli_result(result, "Dispatch accepted; monitor will report progress.")
 
     @staticmethod
-    def _external_task_ids(state: dict | None) -> set[str]:
+    def _external_submission_ids(state: dict | None) -> set[str]:
         tasks = state.get("tasks") if isinstance(state, dict) else None
         if not isinstance(tasks, dict):
             return set()
-        return {
-            task_id for task_id, task in tasks.items()
-            if isinstance(task, dict) and task.get("status") in {"running_external", "waiting_external_evidence"}
-        }
+        ids = set()
+        for task_id, task in tasks.items():
+            if not isinstance(task, dict):
+                continue
+            external = task.get("external_ids")
+            hermes_task_id = external.get("hermes_task_id") if isinstance(external, dict) else None
+            if isinstance(hermes_task_id, str) and hermes_task_id:
+                # Prefix with the durable task id so two stages cannot collide.
+                ids.add(f"{task_id}:{hermes_task_id}")
+        return ids
 
     async def _approve_gate(self, run_id: str, gate_id: str) -> RouterDecision:
         state = self._state(run_id)
