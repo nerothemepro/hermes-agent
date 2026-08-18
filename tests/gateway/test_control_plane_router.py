@@ -17,14 +17,14 @@ from gateway.session import SessionSource
 OWNER_ID = "10001"
 
 
-def _event(text: str, user_id: str = OWNER_ID) -> MessageEvent:
+def _event(text: str, user_id: str = OWNER_ID, chat_id: str | None = None) -> MessageEvent:
     return MessageEvent(
         text=text,
         message_id="phase-c-test",
         source=SessionSource(
             platform=Platform.TELEGRAM,
             user_id=user_id,
-            chat_id=user_id,
+            chat_id=chat_id or user_id,
             user_name="owner" if user_id == OWNER_ID else "other",
             chat_type="dm",
         ),
@@ -101,6 +101,22 @@ async def test_normal_owner_message_passes_through_unchanged() -> None:
 
     assert decision.handled is False
     assert decision.response is None
+
+
+def test_router_binds_exclusive_fence_to_home_chat_env(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-100123")
+
+    router = ControlPlaneRouter.from_gateway_config({
+        "control_plane_router": {
+            "enabled": True,
+            "owner_telegram_user_id": OWNER_ID,
+            "home_telegram_chat_env": "TELEGRAM_HOME_CHANNEL",
+            "exclusive_control_plane_mode": True,
+        }
+    })
+
+    assert router.home_chat_id == "-100123"
+    assert router.exclusive_control_plane_mode is True
 
 
 def test_command_runner_uses_windows_process_group_when_needed() -> None:
@@ -272,3 +288,43 @@ async def test_cli_timeout_returns_fail_closed_reply_without_retry() -> None:
 
     assert decision.handled is True
     assert "temporarily unavailable" in (decision.response or "")
+
+
+@pytest.mark.asyncio
+async def test_exclusive_home_group_refuses_natural_language_without_cli_or_llm_fallback() -> None:
+    command_runner = AsyncMock()
+    router = ControlPlaneRouter(
+        {
+            "enabled": True,
+            "owner_telegram_user_id": OWNER_ID,
+            "home_telegram_chat_id": "-100123",
+            "exclusive_control_plane_mode": True,
+        },
+        command_runner=command_runner,
+    )
+
+    decision = await router.handle(_event("kiem tra giup tao run nay co bi ket khong", chat_id="-100123"))
+
+    assert decision.handled is True
+    assert "Exact syntax" in (decision.response or "")
+    command_runner.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_exclusive_mode_leaves_owner_messages_outside_home_group_on_normal_gateway_path() -> None:
+    command_runner = AsyncMock()
+    router = ControlPlaneRouter(
+        {
+            "enabled": True,
+            "owner_telegram_user_id": OWNER_ID,
+            "home_telegram_chat_id": "-100123",
+            "exclusive_control_plane_mode": True,
+        },
+        command_runner=command_runner,
+    )
+
+    decision = await router.handle(_event("Please summarize the current health status.", chat_id="10001"))
+
+    assert decision.handled is False
+    assert decision.response is None
+    command_runner.assert_not_awaited()
