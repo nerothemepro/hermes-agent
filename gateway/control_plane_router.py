@@ -93,6 +93,7 @@ class ControlPlaneRouter:
         self.enabled = config.get("enabled") is True
         self.owner_id = str(config.get("owner_telegram_user_id") or "").strip()
         self.home_chat_id = self._normalize_chat_id(config.get("home_telegram_chat_id"))
+        self.exclusive_control_plane_mode = config.get("exclusive_control_plane_mode") is True
         self.hersocial_approval_enabled = config.get("hersocial_approval_enabled") is True
         self.marketing_video_ep2_enabled = config.get("marketing_video_ep2_enabled") is True
         self.timeout_seconds = self._bounded_timeout(config.get("command_timeout_seconds"))
@@ -164,6 +165,8 @@ class ControlPlaneRouter:
         if match := re.fullmatch(rf"CANCEL RUN\s+({RUN_ID_PATTERN})", text):
             return await self._cancel(match.group(1))
 
+        if self.exclusive_control_plane_mode and self.home_chat_id and chat_id == self.home_chat_id:
+            return RouterDecision(True, self._syntax_refusal())
         if self._looks_like_control_attempt(text):
             return RouterDecision(True, self._syntax_refusal())
         return RouterDecision(False)
