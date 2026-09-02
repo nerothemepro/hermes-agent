@@ -18,6 +18,7 @@ from gateway.config import Platform
 DEFAULT_PROJECT_PATH = Path("/workspace/hermes-agent-plugin")
 DEFAULT_REGISTRY_DIR = Path("/opt/data/hermes/control-plane/runs")
 PREPARE_BIN = "/workspace/hermes-agent-plugin/bin/hermes-control-plane-prepare"
+VIDEO_SELF_SERVICE_BIN = "/workspace/hermes-agent-plugin/bin/hermes-video-self-service"
 HERSOCIAL_APPROVAL_BIN = "/workspace/hermes-agent-plugin/control-plane/hersocial-auto-post/start-hersocial-auto-post.sh"
 RUN_ID_PATTERN = r"run_[a-z0-9]+_[a-z0-9]+"
 GATE_ID_PATTERN = r"[a-z][a-z0-9_]*"
@@ -96,6 +97,7 @@ class ControlPlaneRouter:
         self.exclusive_control_plane_mode = config.get("exclusive_control_plane_mode") is True
         self.hersocial_approval_enabled = config.get("hersocial_approval_enabled") is True
         self.marketing_video_ep2_enabled = config.get("marketing_video_ep2_enabled") is True
+        self.marketing_video_self_service_enabled = config.get("marketing_video_self_service_enabled") is True
         self.timeout_seconds = self._bounded_timeout(config.get("command_timeout_seconds"))
         self.project_path = Path(config.get("project_path") or DEFAULT_PROJECT_PATH).resolve()
         self.registry_dir = Path(config.get("registry_dir") or DEFAULT_REGISTRY_DIR).resolve()
@@ -146,6 +148,18 @@ class ControlPlaneRouter:
             return await self._prepare("site_audit", {"scope": scope})
         if match := re.fullmatch(r"/research-brief\s+([^\r\n]{3,240})", text):
             return await self._prepare("research_brief", {"topic": match.group(1).strip()})
+        if match := re.fullmatch(r"/marketing-video prepare (EP[2-4])", text):
+            if not self.marketing_video_self_service_enabled:
+                return RouterDecision(True)
+            return await self._video_self_service(["prepare", match.group(1)])
+        if match := re.fullmatch(rf"/marketing-video status ({RUN_ID_PATTERN})", text):
+            if not self.marketing_video_self_service_enabled:
+                return RouterDecision(True)
+            return await self._video_self_service(["status", match.group(1)])
+        if match := re.fullmatch(rf"APPROVE VIDEO KICKOFF ({RUN_ID_PATTERN}) ({SHA256_PATTERN})", text):
+            if not self.marketing_video_self_service_enabled:
+                return RouterDecision(True)
+            return await self._video_self_service(["kickoff", match.group(1), match.group(2)])
         if text == "/marketing-video ep2-usage":
             if not self.marketing_video_ep2_enabled:
                 return RouterDecision(True)
@@ -179,10 +193,28 @@ class ControlPlaneRouter:
     def _syntax_refusal() -> str:
         return (
             "Exact syntax required; no action was taken.\n"
-            "/site-audit docs\n/research-brief <topic>\n/marketing-video ep2-usage\n/status <run_id>\n"
+            "/site-audit docs\n/research-brief <topic>\n/marketing-video prepare EP2|EP3|EP4\n/marketing-video status <run_id>\nAPPROVE VIDEO KICKOFF <run_id> <manifest_sha256>\n/marketing-video ep2-usage\n/status <run_id>\n"
             "APPROVE DISPATCH <run_id>\nAPPROVE GATE <run_id> <gate_id>\n"
             "APPROVE HERSOCIAL POST <post_key> <sha256>\nCANCEL RUN <run_id>"
         )
+
+    async def _video_self_service(self, args: list[str]) -> RouterDecision:
+        result = await self._command(["node", VIDEO_SELF_SERVICE_BIN, *args])
+        if result is None:
+            return RouterDecision(True, "Video controller is temporarily unavailable; no automatic retry was performed.")
+        if result.returncode != 0:
+            return RouterDecision(True, "Video controller failed closed; no dispatch occurred.")
+        payload = self._json_output(result.stdout)
+        if not isinstance(payload, dict):
+            return RouterDecision(True, "Video controller returned an invalid response; no dispatch occurred.")
+        if args[0] == "prepare" and payload.get("status") == "prepared_waiting_for_exact_dispatch_approval":
+            return RouterDecision(True, "Video preflight passed\nrun_id: " + str(payload.get("run_id", "unknown")) + "\n" + str(payload.get("exact_kickoff_approval", "")))
+        if args[0] == "status" and isinstance(payload.get("normalized"), dict):
+            normalized = payload["normalized"]
+            return RouterDecision(True, "Video status\nrun_id: " + str(payload.get("run_id", "unknown")) + "\nstatus: " + str(normalized.get("status", "unknown")) + "\nnext_action: " + str(normalized.get("next_action", "unknown")))
+        if args[0] == "kickoff" and payload.get("status") == "dispatched":
+            return RouterDecision(True, "Video kickoff submitted; monitor will report worker status. No automatic retry was performed.")
+        return RouterDecision(True, "Video controller returned an invalid response; no dispatch occurred.")
 
     async def _prepare(self, template: str, params: dict) -> RouterDecision:
         result = await self._command(["node", PREPARE_BIN, "--template", template, "--params", json.dumps(params)])

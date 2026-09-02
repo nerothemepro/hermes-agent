@@ -328,3 +328,45 @@ async def test_exclusive_mode_leaves_owner_messages_outside_home_group_on_normal
     assert decision.handled is False
     assert decision.response is None
     command_runner.assert_not_awaited()
+
+@pytest.mark.asyncio
+async def test_video_self_service_prepare_is_exact_and_owner_gated() -> None:
+    command_runner = AsyncMock(return_value=SimpleNamespace(
+        returncode=0,
+        stdout='{"status":"prepared_waiting_for_exact_dispatch_approval","run_id":"run_abc123_def456","exact_kickoff_approval":"APPROVE VIDEO KICKOFF run_abc123_def456 ' + ('a' * 64) + '"}',
+        stderr="",
+    ))
+    router = ControlPlaneRouter(
+        {"enabled": True, "owner_telegram_user_id": OWNER_ID, "marketing_video_self_service_enabled": True},
+        command_runner=command_runner,
+    )
+    decision = await router.handle(_event("/marketing-video prepare EP3"))
+    assert decision.handled is True
+    assert "APPROVE VIDEO KICKOFF run_abc123_def456" in (decision.response or "")
+    assert command_runner.await_args.args[0] == ["node", router_module.VIDEO_SELF_SERVICE_BIN, "prepare", "EP3"]
+
+
+@pytest.mark.asyncio
+async def test_video_self_service_kickoff_requires_exact_hash_and_returns_bounded_result() -> None:
+    digest = 'b' * 64
+    command_runner = AsyncMock(return_value=SimpleNamespace(returncode=0, stdout='{"status":"dispatched"}', stderr=""))
+    router = ControlPlaneRouter(
+        {"enabled": True, "owner_telegram_user_id": OWNER_ID, "marketing_video_self_service_enabled": True},
+        command_runner=command_runner,
+    )
+    decision = await router.handle(_event(f"APPROVE VIDEO KICKOFF run_abc123_def456 {digest}"))
+    assert decision.handled is True
+    assert "kickoff submitted" in (decision.response or "").lower()
+    assert command_runner.await_args.args[0] == ["node", router_module.VIDEO_SELF_SERVICE_BIN, "kickoff", "run_abc123_def456", digest]
+
+
+@pytest.mark.asyncio
+async def test_video_self_service_invalid_extra_argument_is_refused_without_cli() -> None:
+    command_runner = AsyncMock()
+    router = ControlPlaneRouter(
+        {"enabled": True, "owner_telegram_user_id": OWNER_ID, "marketing_video_self_service_enabled": True},
+        command_runner=command_runner,
+    )
+    decision = await router.handle(_event("/marketing-video prepare EP3 extra"))
+    assert "Exact syntax" in (decision.response or "")
+    command_runner.assert_not_awaited()
