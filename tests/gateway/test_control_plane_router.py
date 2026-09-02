@@ -370,3 +370,44 @@ async def test_video_self_service_invalid_extra_argument_is_refused_without_cli(
     decision = await router.handle(_event("/marketing-video prepare EP3 extra"))
     assert "Exact syntax" in (decision.response or "")
     command_runner.assert_not_awaited()
+
+@pytest.mark.asyncio
+async def test_video_self_service_gate_commands_are_exact_owner_gated_and_bounded() -> None:
+    digest = 'c' * 64
+    command_runner = AsyncMock(return_value=SimpleNamespace(returncode=0, stdout='{"status":"gate_approved_and_advanced"}', stderr=""))
+    router = ControlPlaneRouter(
+        {"enabled": True, "owner_telegram_user_id": OWNER_ID, "marketing_video_self_service_enabled": True},
+        command_runner=command_runner,
+    )
+    decision = await router.handle(_event(f"APPROVE VIDEO GATE run_abc123_def456 story_lock {digest}"))
+    assert "gate approved" in (decision.response or "").lower()
+    assert command_runner.await_args.args[0] == ["node", router_module.VIDEO_SELF_SERVICE_BIN, "approve-gate", "run_abc123_def456", "story_lock", digest]
+
+
+@pytest.mark.asyncio
+async def test_video_self_service_reject_and_cancel_use_only_exact_grammar() -> None:
+    command_runner = AsyncMock(return_value=SimpleNamespace(returncode=0, stdout='{"status":"gate_rejected"}', stderr=""))
+    router = ControlPlaneRouter(
+        {"enabled": True, "owner_telegram_user_id": OWNER_ID, "marketing_video_self_service_enabled": True},
+        command_runner=command_runner,
+    )
+    decision = await router.handle(_event("REJECT VIDEO GATE run_abc123_def456 picture_lock LAYOUT_OVERLAP"))
+    assert "needs changes" in (decision.response or "").lower()
+    assert command_runner.await_args.args[0] == ["node", router_module.VIDEO_SELF_SERVICE_BIN, "reject-gate", "run_abc123_def456", "picture_lock", "LAYOUT_OVERLAP"]
+    command_runner.reset_mock()
+    command_runner.return_value = SimpleNamespace(returncode=0, stdout='{"status":"cancelled"}', stderr="")
+    decision = await router.handle(_event("CANCEL VIDEO RUN run_abc123_def456"))
+    assert "cancellation" in (decision.response or "").lower()
+    assert command_runner.await_args.args[0] == ["node", router_module.VIDEO_SELF_SERVICE_BIN, "cancel", "run_abc123_def456"]
+
+
+@pytest.mark.asyncio
+async def test_video_self_service_gate_extra_or_malformed_input_never_reaches_cli() -> None:
+    command_runner = AsyncMock()
+    router = ControlPlaneRouter(
+        {"enabled": True, "owner_telegram_user_id": OWNER_ID, "marketing_video_self_service_enabled": True},
+        command_runner=command_runner,
+    )
+    decision = await router.handle(_event("APPROVE VIDEO GATE run_abc123_def456 story_lock short"))
+    assert "Exact syntax" in (decision.response or "")
+    command_runner.assert_not_awaited()
