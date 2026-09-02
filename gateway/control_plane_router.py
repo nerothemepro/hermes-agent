@@ -160,6 +160,18 @@ class ControlPlaneRouter:
             if not self.marketing_video_self_service_enabled:
                 return RouterDecision(True)
             return await self._video_self_service(["kickoff", match.group(1), match.group(2)])
+        if match := re.fullmatch(rf"APPROVE VIDEO GATE ({RUN_ID_PATTERN}) (story_lock|picture_lock|publish) ({SHA256_PATTERN})", text):
+            if not self.marketing_video_self_service_enabled:
+                return RouterDecision(True)
+            return await self._video_self_service(["approve-gate", match.group(1), match.group(2), match.group(3)])
+        if match := re.fullmatch(rf"REJECT VIDEO GATE ({RUN_ID_PATTERN}) (story_lock|picture_lock|publish) ([A-Z][A-Z0-9_]{{2,48}})", text):
+            if not self.marketing_video_self_service_enabled:
+                return RouterDecision(True)
+            return await self._video_self_service(["reject-gate", match.group(1), match.group(2), match.group(3)])
+        if match := re.fullmatch(rf"CANCEL VIDEO RUN ({RUN_ID_PATTERN})", text):
+            if not self.marketing_video_self_service_enabled:
+                return RouterDecision(True)
+            return await self._video_self_service(["cancel", match.group(1)])
         if text == "/marketing-video ep2-usage":
             if not self.marketing_video_ep2_enabled:
                 return RouterDecision(True)
@@ -193,7 +205,7 @@ class ControlPlaneRouter:
     def _syntax_refusal() -> str:
         return (
             "Exact syntax required; no action was taken.\n"
-            "/site-audit docs\n/research-brief <topic>\n/marketing-video prepare EP2|EP3|EP4\n/marketing-video status <run_id>\nAPPROVE VIDEO KICKOFF <run_id> <manifest_sha256>\n/marketing-video ep2-usage\n/status <run_id>\n"
+            "/site-audit docs\n/research-brief <topic>\n/marketing-video prepare EP2|EP3|EP4\n/marketing-video status <run_id>\nAPPROVE VIDEO KICKOFF <run_id> <manifest_sha256>\nAPPROVE VIDEO GATE <run_id> story_lock|picture_lock|publish <packet_sha256>\nREJECT VIDEO GATE <run_id> story_lock|picture_lock|publish <REASON_CODE>\nCANCEL VIDEO RUN <run_id>\n/marketing-video ep2-usage\n/status <run_id>\n"
             "APPROVE DISPATCH <run_id>\nAPPROVE GATE <run_id> <gate_id>\n"
             "APPROVE HERSOCIAL POST <post_key> <sha256>\nCANCEL RUN <run_id>"
         )
@@ -214,6 +226,12 @@ class ControlPlaneRouter:
             return RouterDecision(True, "Video status\nrun_id: " + str(payload.get("run_id", "unknown")) + "\nstatus: " + str(normalized.get("status", "unknown")) + "\nnext_action: " + str(normalized.get("next_action", "unknown")))
         if args[0] == "kickoff" and payload.get("status") == "dispatched":
             return RouterDecision(True, "Video kickoff submitted; monitor will report worker status. No automatic retry was performed.")
+        if args[0] == "approve-gate" and payload.get("status") == "gate_approved_and_advanced":
+            return RouterDecision(True, "Video gate approved; the next bounded stage was submitted for monitoring.")
+        if args[0] == "reject-gate" and payload.get("status") == "gate_rejected":
+            return RouterDecision(True, "Video gate recorded as needs changes; no stage was dispatched.")
+        if args[0] == "cancel" and payload.get("status") in {"cancelled", "terminal_no_cancel"}:
+            return RouterDecision(True, "Video run cancellation was recorded through the audited controller.")
         return RouterDecision(True, "Video controller returned an invalid response; no dispatch occurred.")
 
     async def _prepare(self, template: str, params: dict) -> RouterDecision:

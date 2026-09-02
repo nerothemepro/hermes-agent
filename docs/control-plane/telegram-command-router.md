@@ -31,6 +31,12 @@ The router accepts only these owner commands:
 ```text
 /site-audit docs
 /research-brief <topic>
+/marketing-video prepare EP2|EP3|EP4
+/marketing-video status <run_id>
+APPROVE VIDEO KICKOFF <run_id> <manifest_sha256>
+APPROVE VIDEO GATE <run_id> story_lock|picture_lock|publish <packet_sha256>
+REJECT VIDEO GATE <run_id> story_lock|picture_lock|publish <REASON_CODE>
+CANCEL VIDEO RUN <run_id>
 /marketing-video ep2-usage
 /status <run_id>
 STATUS <run_id>
@@ -44,7 +50,8 @@ Other senders are silently dropped before parsing. Invalid, partial, or natural-
 ## Execution Contract
 
 - Template preparation uses the Phase A `hermes-control-plane-prepare` helper.
-- `/marketing-video ep2-usage` is disabled by default and, when enabled, can prepare only the fixed attended Episode 2 template. It never dispatches a worker.
+- `marketing_video_self_service_enabled` is disabled by default. When enabled, the bounded EP2/EP3/EP4 prepare, kickoff, gate approve/reject, and cancel commands delegate to the manifest-driven controller. Publication remains outside the router.
+- `/marketing-video ep2-usage` remains a deprecated compatibility alias; it never dispatches a worker.
 - Dispatch, gate approval, and cancellation use audited `sdtk-agent` CLI invocations only.
 - The router invokes commands as argv lists, with a bounded 1--30 second timeout and no automatic retry.
 - Timeout or CLI errors produce a short fail-closed owner reply without exposing stderr, tokens, or command output. If a dispatch timeout occurs after durable external-task submission, the router reads the ledger once and reports that dispatch started; it never retries the command.
