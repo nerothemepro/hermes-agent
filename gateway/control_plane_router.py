@@ -19,6 +19,9 @@ DEFAULT_PROJECT_PATH = Path("/workspace/hermes-agent-plugin")
 DEFAULT_REGISTRY_DIR = Path("/opt/data/hermes/control-plane/runs")
 PREPARE_BIN = "/workspace/hermes-agent-plugin/bin/hermes-control-plane-prepare"
 VIDEO_SELF_SERVICE_BIN = "/workspace/hermes-agent-plugin/bin/hermes-video-self-service"
+MARKETING_WORKFLOW_BIN = "/workspace/hermes-agent-plugin/bin/hermes-marketing-workflow"
+DEFAULT_MARKETING_WORKFLOW_DATABASE_FILE = Path("/opt/data/hermes/control-plane/marketing-workflows/state.sqlite")
+DEFAULT_MARKETING_WORKFLOW_ARTIFACT_ROOT = Path("/opt/data/hermes/control-plane/marketing-workflows/artifacts")
 HERSOCIAL_APPROVAL_BIN = "/workspace/hermes-agent-plugin/control-plane/hersocial-auto-post/start-hersocial-auto-post.sh"
 RUN_ID_PATTERN = r"run_[a-z0-9]+_[a-z0-9]+"
 GATE_ID_PATTERN = r"[a-z][a-z0-9_]*"
@@ -98,6 +101,9 @@ class ControlPlaneRouter:
         self.hersocial_approval_enabled = config.get("hersocial_approval_enabled") is True
         self.marketing_video_ep2_enabled = config.get("marketing_video_ep2_enabled") is True
         self.marketing_video_self_service_enabled = config.get("marketing_video_self_service_enabled") is True
+        self.marketing_three_workflow_enabled = config.get("marketing_three_workflow_enabled") is True
+        self.marketing_workflow_database_file = Path(config.get("marketing_workflow_database_file") or DEFAULT_MARKETING_WORKFLOW_DATABASE_FILE).resolve()
+        self.marketing_workflow_artifact_root = Path(config.get("marketing_workflow_artifact_root") or DEFAULT_MARKETING_WORKFLOW_ARTIFACT_ROOT).resolve()
         self.timeout_seconds = self._bounded_timeout(config.get("command_timeout_seconds"))
         self.project_path = Path(config.get("project_path") or DEFAULT_PROJECT_PATH).resolve()
         self.registry_dir = Path(config.get("registry_dir") or DEFAULT_REGISTRY_DIR).resolve()
@@ -148,6 +154,8 @@ class ControlPlaneRouter:
             return await self._prepare("site_audit", {"scope": scope})
         if match := re.fullmatch(r"/research-brief\s+([^\r\n]{3,240})", text):
             return await self._prepare("research_brief", {"topic": match.group(1).strip()})
+        if self.marketing_three_workflow_enabled and self._is_three_workflow_command(text):
+            return await self._marketing_three_workflow(event, text)
         if match := re.fullmatch(r"/marketing-video prepare (EP[2-4])", text):
             if not self.marketing_video_self_service_enabled:
                 return RouterDecision(True)
@@ -205,10 +213,61 @@ class ControlPlaneRouter:
     def _syntax_refusal() -> str:
         return (
             "Exact syntax required; no action was taken.\n"
-            "/site-audit docs\n/research-brief <topic>\n/marketing-video prepare EP2|EP3|EP4\n/marketing-video status <run_id>\nAPPROVE VIDEO KICKOFF <run_id> <manifest_sha256>\nAPPROVE VIDEO GATE <run_id> story_lock|picture_lock|publish <packet_sha256>\nREJECT VIDEO GATE <run_id> story_lock|picture_lock|publish <REASON_CODE>\nCANCEL VIDEO RUN <run_id>\n/marketing-video ep2-usage\n/status <run_id>\n"
+            "/site-audit docs\n/research-brief <topic>\n/marketing-research prepare EP<id>\n/marketing-video prepare <brief_sha256>\n/marketing-social prepare <brief_sha256> <video_sha256>\nAPPROVE RESEARCH|VIDEO|SOCIAL KICKOFF <run_id> <packet_sha256>\nAPPROVE STORY|ASSET|PICTURE LOCK <run_id> <packet_sha256>\nREJECT STORY|ASSET|PICTURE LOCK <run_id> <REASON_CODE>\nCANCEL RESEARCH|VIDEO|SOCIAL RUN <run_id>\n/marketing-video prepare EP2|EP3|EP4\n/marketing-video ep2-usage\n/status <run_id>\n"
             "APPROVE DISPATCH <run_id>\nAPPROVE GATE <run_id> <gate_id>\n"
             "APPROVE HERSOCIAL POST <post_key> <sha256>\nCANCEL RUN <run_id>"
         )
+
+    @staticmethod
+    def _is_three_workflow_command(text: str) -> bool:
+        """Select only the new grammar and keep legacy video commands isolated."""
+        if re.match(r"^/marketing-(?:research|social)\b", text):
+            return True
+        if re.match(r"^/marketing-video (?:prepare [a-f0-9]{64}|status run_mkt_[a-f0-9]{12})$", text):
+            return True
+        if re.match(r"^APPROVE VIDEO KICKOFF run_mkt_[a-f0-9]{12} [a-f0-9]{64}$", text):
+            return True
+        if re.match(r"^(?:APPROVE|REJECT) (?:RESEARCH KICKOFF|SOCIAL KICKOFF|STORY LOCK|ASSET LOCK|PICTURE LOCK|YOUTUBE POST|FACEBOOK POST|X POST)\b", text):
+            return True
+        return bool(re.match(r"^CANCEL (?:RESEARCH|SOCIAL) RUN\b|^CANCEL VIDEO RUN run_mkt_[a-f0-9]{12}$", text))
+
+    async def _marketing_three_workflow(self, event, text: str) -> RouterDecision:
+        update_id = getattr(event, "platform_update_id", None)
+        if not isinstance(update_id, int) or isinstance(update_id, bool) or update_id < 0:
+            return RouterDecision(True, "Marketing workflow command requires a Telegram update id; no action was taken.")
+        result = await self._command([
+            "node", MARKETING_WORKFLOW_BIN, "telegram",
+            "--database-file", str(self.marketing_workflow_database_file),
+            "--artifact-root", str(self.marketing_workflow_artifact_root),
+            "--command-id", f"telegram:{update_id}",
+            "--text", text,
+        ])
+        if result is None:
+            return RouterDecision(True, "Marketing workflow controller is temporarily unavailable; no automatic retry was performed.")
+        if result.returncode != 0:
+            return RouterDecision(True, "Marketing workflow command failed closed; no worker was dispatched.")
+        payload = self._json_output(result.stdout)
+        if not isinstance(payload, dict):
+            return RouterDecision(True, "Marketing workflow controller returned an invalid response; no action was taken.")
+        workflow = payload.get("workflow")
+        labels = {
+            "research_and_story": "RESEARCH",
+            "video_production": "VIDEO",
+            "social_distribution": "SOCIAL",
+        }
+        label = labels.get(workflow)
+        if payload.get("status") == "awaiting_kickoff" and label and isinstance(payload.get("run_id"), str) and isinstance(payload.get("kickoff_packet_sha256"), str):
+            return RouterDecision(True, f"Marketing preflight passed\nrun_id: {payload['run_id']}\nAPPROVE {label} KICKOFF {payload['run_id']} {payload['kickoff_packet_sha256']}")
+        if payload.get("status") == "ready_for_worker_dispatch":
+            return RouterDecision(True, "Marketing kickoff recorded. The bounded worker dispatcher may now claim the ready task; no router retry was performed.")
+        if payload.get("status") == "duplicate":
+            return RouterDecision(True, "Marketing command was already recorded; no duplicate workflow mutation occurred.")
+        state = payload.get("state")
+        if isinstance(state, dict) and isinstance(state.get("status"), str):
+            return RouterDecision(True, f"Marketing command recorded\nrun_id: {state.get('run_id', 'unknown')}\nstatus: {state['status']}")
+        if isinstance(payload.get("status"), str) and isinstance(payload.get("run_id"), str):
+            return RouterDecision(True, f"Marketing status\nrun_id: {payload['run_id']}\nstatus: {payload['status']}")
+        return RouterDecision(True, "Marketing workflow controller returned an invalid response; no action was taken.")
 
     async def _video_self_service(self, args: list[str]) -> RouterDecision:
         result = await self._command(["node", VIDEO_SELF_SERVICE_BIN, *args])

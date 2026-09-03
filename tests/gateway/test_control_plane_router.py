@@ -411,3 +411,95 @@ async def test_video_self_service_gate_extra_or_malformed_input_never_reaches_cl
     decision = await router.handle(_event("APPROVE VIDEO GATE run_abc123_def456 story_lock short"))
     assert "Exact syntax" in (decision.response or "")
     command_runner.assert_not_awaited()
+
+@pytest.mark.asyncio
+async def test_three_workflow_research_prepare_uses_telegram_update_id_as_command_identity() -> None:
+    command_runner = AsyncMock(return_value=SimpleNamespace(
+        returncode=0,
+        stdout='{"status":"awaiting_kickoff","run_id":"run_mkt_abc123def456","workflow":"research_and_story","kickoff_packet_sha256":"' + ('a' * 64) + '"}',
+        stderr="",
+    ))
+    router = ControlPlaneRouter(
+        {
+            "enabled": True,
+            "owner_telegram_user_id": OWNER_ID,
+            "marketing_three_workflow_enabled": True,
+            "marketing_workflow_database_file": "/opt/data/hermes/control-plane/marketing-workflows/state.sqlite",
+            "marketing_workflow_artifact_root": "/opt/data/hermes/control-plane/marketing-workflows/artifacts",
+        },
+        command_runner=command_runner,
+    )
+    event = _event("/marketing-research prepare EP4")
+    event.platform_update_id = 424242
+
+    decision = await router.handle(event)
+
+    assert decision.handled is True
+    assert "APPROVE RESEARCH KICKOFF run_mkt_abc123def456" in (decision.response or "")
+    assert command_runner.await_args.args[0] == [
+        "node", router_module.MARKETING_WORKFLOW_BIN, "telegram",
+        "--database-file", "/opt/data/hermes/control-plane/marketing-workflows/state.sqlite",
+        "--artifact-root", "/opt/data/hermes/control-plane/marketing-workflows/artifacts",
+        "--command-id", "telegram:424242",
+        "--text", "/marketing-research prepare EP4",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_three_workflow_mutation_requires_telegram_update_identity() -> None:
+    command_runner = AsyncMock()
+    router = ControlPlaneRouter(
+        {"enabled": True, "owner_telegram_user_id": OWNER_ID, "marketing_three_workflow_enabled": True},
+        command_runner=command_runner,
+    )
+
+    decision = await router.handle(_event("/marketing-research prepare EP4"))
+
+    assert decision.handled is True
+    assert "Telegram update id" in (decision.response or "")
+    command_runner.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_three_workflow_video_kickoff_uses_new_route_only_for_run_mkt_ids() -> None:
+    digest = 'b' * 64
+    command_runner = AsyncMock(return_value=SimpleNamespace(
+        returncode=0,
+        stdout='{"status":"ready_for_worker_dispatch","state":{"status":"ready"}}',
+        stderr="",
+    ))
+    router = ControlPlaneRouter(
+        {"enabled": True, "owner_telegram_user_id": OWNER_ID, "marketing_three_workflow_enabled": True},
+        command_runner=command_runner,
+    )
+    event = _event(f"APPROVE VIDEO KICKOFF run_mkt_abc123def456 {digest}")
+    event.platform_update_id = 424243
+
+    decision = await router.handle(event)
+
+    assert decision.handled is True
+    assert "kickoff recorded" in (decision.response or "").lower()
+    assert command_runner.await_args.args[0][:3] == ["node", router_module.MARKETING_WORKFLOW_BIN, "telegram"]
+    assert router_module.VIDEO_SELF_SERVICE_BIN not in command_runner.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_three_workflow_keeps_legacy_video_kickoff_on_legacy_route() -> None:
+    digest = 'c' * 64
+    command_runner = AsyncMock(return_value=SimpleNamespace(returncode=0, stdout='{"status":"dispatched"}', stderr=""))
+    router = ControlPlaneRouter(
+        {
+            "enabled": True,
+            "owner_telegram_user_id": OWNER_ID,
+            "marketing_three_workflow_enabled": True,
+            "marketing_video_self_service_enabled": True,
+        },
+        command_runner=command_runner,
+    )
+    event = _event(f"APPROVE VIDEO KICKOFF run_abc123_def456 {digest}")
+    event.platform_update_id = 424244
+
+    decision = await router.handle(event)
+
+    assert "kickoff submitted" in (decision.response or "").lower()
+    assert command_runner.await_args.args[0] == ["node", router_module.VIDEO_SELF_SERVICE_BIN, "kickoff", "run_abc123_def456", digest]
