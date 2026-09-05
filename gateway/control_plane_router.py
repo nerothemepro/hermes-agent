@@ -20,6 +20,7 @@ DEFAULT_REGISTRY_DIR = Path("/opt/data/hermes/control-plane/runs")
 PREPARE_BIN = "/workspace/hermes-agent-plugin/bin/hermes-control-plane-prepare"
 VIDEO_SELF_SERVICE_BIN = "/workspace/hermes-agent-plugin/bin/hermes-video-self-service"
 MARKETING_WORKFLOW_BIN = "/workspace/hermes-agent-plugin/bin/hermes-marketing-workflow"
+MARKETING_WORKFLOW_DISPATCH_BIN = "/workspace/hermes-agent-plugin/bin/hermes-marketing-workflow-dispatch"
 DEFAULT_MARKETING_WORKFLOW_DATABASE_FILE = Path("/opt/data/hermes/control-plane/marketing-workflows/state.sqlite")
 DEFAULT_MARKETING_WORKFLOW_ARTIFACT_ROOT = Path("/opt/data/hermes/control-plane/marketing-workflows/artifacts")
 HERSOCIAL_APPROVAL_BIN = "/workspace/hermes-agent-plugin/control-plane/hersocial-auto-post/start-hersocial-auto-post.sh"
@@ -259,6 +260,9 @@ class ControlPlaneRouter:
         if payload.get("status") == "awaiting_kickoff" and label and isinstance(payload.get("run_id"), str) and isinstance(payload.get("kickoff_packet_sha256"), str):
             return RouterDecision(True, f"Marketing preflight passed\nrun_id: {payload['run_id']}\nAPPROVE {label} KICKOFF {payload['run_id']} {payload['kickoff_packet_sha256']}")
         if payload.get("status") == "ready_for_worker_dispatch":
+            state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+            if state.get("workflow") == "research_and_story" and isinstance(state.get("run_id"), str):
+                return await self._dispatch_marketing_workflow(state["run_id"])
             return RouterDecision(True, "Marketing kickoff recorded. The bounded worker dispatcher may now claim the ready task; no router retry was performed.")
         if payload.get("status") == "duplicate":
             return RouterDecision(True, "Marketing command was already recorded; no duplicate workflow mutation occurred.")
@@ -268,6 +272,22 @@ class ControlPlaneRouter:
         if isinstance(payload.get("status"), str) and isinstance(payload.get("run_id"), str):
             return RouterDecision(True, f"Marketing status\nrun_id: {payload['run_id']}\nstatus: {payload['status']}")
         return RouterDecision(True, "Marketing workflow controller returned an invalid response; no action was taken.")
+
+    async def _dispatch_marketing_workflow(self, run_id: str) -> RouterDecision:
+        result = await self._command([
+            "node", MARKETING_WORKFLOW_DISPATCH_BIN, "dispatch",
+            "--database-file", str(self.marketing_workflow_database_file),
+            "--artifact-root", str(self.marketing_workflow_artifact_root),
+            "--run-id", run_id,
+        ])
+        if result is None:
+            return RouterDecision(True, "Marketing worker dispatcher is temporarily unavailable; no automatic retry was performed.")
+        if result.returncode != 0:
+            return RouterDecision(True, "Marketing worker dispatch failed closed; no duplicate task was created.")
+        payload = self._json_output(result.stdout)
+        if not isinstance(payload, dict) or payload.get("status") != "dispatched":
+            return RouterDecision(True, "Marketing worker dispatcher returned an invalid response; no duplicate task was created.")
+        return RouterDecision(True, "Workflow A dispatched to HerResearch; monitor will report worker status. No automatic retry was performed.")
 
     async def _video_self_service(self, args: list[str]) -> RouterDecision:
         result = await self._command(["node", VIDEO_SELF_SERVICE_BIN, *args])
