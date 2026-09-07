@@ -261,7 +261,7 @@ class ControlPlaneRouter:
             return RouterDecision(True, f"Marketing preflight passed\nrun_id: {payload['run_id']}\nAPPROVE {label} KICKOFF {payload['run_id']} {payload['kickoff_packet_sha256']}")
         if payload.get("status") == "ready_for_worker_dispatch":
             state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
-            if state.get("workflow") == "research_and_story" and isinstance(state.get("run_id"), str):
+            if state.get("workflow") in {"research_and_story", "video_production", "social_distribution"} and isinstance(state.get("run_id"), str):
                 return await self._dispatch_marketing_workflow(state["run_id"])
             return RouterDecision(True, "Marketing kickoff recorded. The bounded worker dispatcher may now claim the ready task; no router retry was performed.")
         if payload.get("status") == "duplicate":
@@ -287,7 +287,14 @@ class ControlPlaneRouter:
         payload = self._json_output(result.stdout)
         if not isinstance(payload, dict) or payload.get("status") != "dispatched":
             return RouterDecision(True, "Marketing worker dispatcher returned an invalid response; no duplicate task was created.")
-        return RouterDecision(True, "Workflow A dispatched to HerResearch; monitor will report worker status. No automatic retry was performed.")
+        state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+        worker_labels = {
+            "research_and_story": ("Workflow A", "HerResearch"),
+            "video_production": ("Workflow B", "HerVid"),
+            "social_distribution": ("Workflow C", "HerSocial"),
+        }
+        workflow_label, worker_label = worker_labels.get(state.get("workflow"), ("Marketing workflow", "the assigned worker"))
+        return RouterDecision(True, f"{workflow_label} dispatched to {worker_label}; monitor will report worker status. No automatic retry was performed.")
 
     async def _video_self_service(self, args: list[str]) -> RouterDecision:
         result = await self._command(["node", VIDEO_SELF_SERVICE_BIN, *args])
