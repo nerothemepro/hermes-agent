@@ -463,11 +463,18 @@ async def test_three_workflow_mutation_requires_telegram_update_identity() -> No
 @pytest.mark.asyncio
 async def test_three_workflow_video_kickoff_uses_new_route_only_for_run_mkt_ids() -> None:
     digest = 'b' * 64
-    command_runner = AsyncMock(return_value=SimpleNamespace(
-        returncode=0,
-        stdout='{"status":"ready_for_worker_dispatch","state":{"status":"ready"}}',
-        stderr="",
-    ))
+    command_runner = AsyncMock(side_effect=[
+        SimpleNamespace(
+            returncode=0,
+            stdout='{"status":"ready_for_worker_dispatch","state":{"run_id":"run_mkt_abc123def456","workflow":"video_production","status":"ready"}}',
+            stderr="",
+        ),
+        SimpleNamespace(
+            returncode=0,
+            stdout='{"status":"dispatched","state":{"run_id":"run_mkt_abc123def456","workflow":"video_production","status":"external_released"}}',
+            stderr="",
+        ),
+    ])
     router = ControlPlaneRouter(
         {"enabled": True, "owner_telegram_user_id": OWNER_ID, "marketing_three_workflow_enabled": True},
         command_runner=command_runner,
@@ -478,9 +485,44 @@ async def test_three_workflow_video_kickoff_uses_new_route_only_for_run_mkt_ids(
     decision = await router.handle(event)
 
     assert decision.handled is True
-    assert "kickoff recorded" in (decision.response or "").lower()
-    assert command_runner.await_args.args[0][:3] == ["node", router_module.MARKETING_WORKFLOW_BIN, "telegram"]
-    assert router_module.VIDEO_SELF_SERVICE_BIN not in command_runner.await_args.args[0]
+    assert "workflow b dispatched to hervid" in (decision.response or "").lower()
+    assert command_runner.await_args_list[0].args[0][:3] == ["node", router_module.MARKETING_WORKFLOW_BIN, "telegram"]
+    assert command_runner.await_args_list[1].args[0] == [
+        "node", router_module.MARKETING_WORKFLOW_DISPATCH_BIN, "dispatch",
+        "--database-file", str(router.marketing_workflow_database_file),
+        "--artifact-root", str(router.marketing_workflow_artifact_root),
+        "--run-id", "run_mkt_abc123def456",
+    ]
+    assert router_module.VIDEO_SELF_SERVICE_BIN not in command_runner.await_args_list[0].args[0]
+
+
+@pytest.mark.asyncio
+async def test_three_workflow_social_kickoff_dispatches_hersocial() -> None:
+    digest = 'd' * 64
+    command_runner = AsyncMock(side_effect=[
+        SimpleNamespace(
+            returncode=0,
+            stdout='{"status":"ready_for_worker_dispatch","state":{"run_id":"run_mkt_abc123def456","workflow":"social_distribution","status":"ready"}}',
+            stderr="",
+        ),
+        SimpleNamespace(
+            returncode=0,
+            stdout='{"status":"dispatched","state":{"run_id":"run_mkt_abc123def456","workflow":"social_distribution","status":"external_released"}}',
+            stderr="",
+        ),
+    ])
+    router = ControlPlaneRouter(
+        {"enabled": True, "owner_telegram_user_id": OWNER_ID, "marketing_three_workflow_enabled": True},
+        command_runner=command_runner,
+    )
+    event = _event(f"APPROVE SOCIAL KICKOFF run_mkt_abc123def456 {digest}")
+    event.platform_update_id = 424245
+
+    decision = await router.handle(event)
+
+    assert decision.handled is True
+    assert "workflow c dispatched to hersocial" in (decision.response or "").lower()
+    assert command_runner.await_args_list[1].args[0][-2:] == ["--run-id", "run_mkt_abc123def456"]
 
 
 @pytest.mark.asyncio
