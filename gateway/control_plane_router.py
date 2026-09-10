@@ -142,7 +142,8 @@ class ControlPlaneRouter:
         if not self.owner_id or sender_id != self.owner_id:
             return RouterDecision(True)
 
-        text = (getattr(event, "text", "") or "").strip()
+        # Telegram may wrap a long hash onto a new visual line. Control grammar remains exact after whitespace normalization.
+        text = re.sub(r"\s+", " ", (getattr(event, "text", "") or "")).strip()
         # A configured home chat binds control commands to the owner group.
         # Normal owner conversation outside that group continues to the LLM unchanged.
         chat_id = self._normalize_chat_id(getattr(event.source, "chat_id", ""))
